@@ -3,6 +3,7 @@ import * as core from '@actions/core';
 export interface ActionInput {
   arch: string;
   githubToken: string;
+  onlyChangedApps?: boolean;
   argocd: {
     excludePaths: string[];
     extraCliArgs: string;
@@ -26,6 +27,7 @@ export default function getActionInput(): ActionInput {
 
   return {
     arch: process.env.ARCH || 'linux',
+    onlyChangedApps: core.getInput('only-changed-apps') === 'true',
     argocd: {
       excludePaths: core.getInput('argocd-exclude-paths').split(','),
       extraCliArgs,

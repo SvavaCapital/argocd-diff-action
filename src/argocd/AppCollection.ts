@@ -8,6 +8,41 @@ export class AppCollection {
     this.apps = apps;
   }
 
+  // Filters apps to those whose `spec.source.path` overlaps at least one changed file path 
+  filterByChangedFiles(changedFiles: string[]): AppCollection {
+    if (this.apps.length === 0) {
+      return this;
+    }
+
+    if (changedFiles.length === 0) {
+      return new AppCollection([]);
+    }
+
+    const normalizedChangedFiles = changedFiles
+      .filter(Boolean)
+      .map(f => f.replace(/^\.\//, ''));
+
+    return new AppCollection(
+      this.apps.filter(app => {
+        const appPathRaw = app.spec.source?.path;
+        if (!appPathRaw) {
+          return false;
+        }
+
+        const appPath = appPathRaw.replace(/\/+$/, '').replace(/^\.\//, '');
+
+        if (appPath === '.' || appPath === '') {
+          return true;
+        }
+
+        return normalizedChangedFiles.some(changedPath => {
+          const p = changedPath.replace(/\/+$/, '');
+          return p === appPath || p.startsWith(`${appPath}/`);
+        });
+      })
+    );
+  }
+
   filterByExcludedPath(excludedPaths: string[]): AppCollection {
     if (this.apps.length === 0) {
       return this;
@@ -31,7 +66,6 @@ export class AppCollection {
 
     return new AppCollection(
       this.apps.filter(app => {
-        console.log(app);
         return app.spec.source?.repoURL !== undefined && app.spec.source.repoURL.includes(repoMatch);
       })
     );
