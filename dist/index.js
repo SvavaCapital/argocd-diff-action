@@ -34299,6 +34299,32 @@ class AppCollection {
     constructor(apps) {
         this.apps = apps;
     }
+    // Filters apps to those whose `spec.source.path` overlaps at least one changed file path 
+    filterByChangedFiles(changedFiles) {
+        if (this.apps.length === 0) {
+            return this;
+        }
+        if (changedFiles.length === 0) {
+            return new AppCollection([]);
+        }
+        const normalizedChangedFiles = changedFiles
+            .filter(Boolean)
+            .map(f => f.replace(/^\.\//, ''));
+        return new AppCollection(this.apps.filter(app => {
+            const appPathRaw = app.spec.source?.path;
+            if (!appPathRaw) {
+                return false;
+            }
+            const appPath = appPathRaw.replace(/\/+$/, '').replace(/^\.\//, '');
+            if (appPath === '.' || appPath === '') {
+                return true;
+            }
+            return normalizedChangedFiles.some(changedPath => {
+                const p = changedPath.replace(/\/+$/, '');
+                return p === appPath || p.startsWith(`${appPath}/`);
+            });
+        }));
+    }
     filterByExcludedPath(excludedPaths) {
         if (this.apps.length === 0) {
             return this;
@@ -34315,7 +34341,6 @@ class AppCollection {
             return this;
         }
         return new AppCollection(this.apps.filter(app => {
-            console.log(app);
             return app.spec.source?.repoURL !== undefined && app.spec.source.repoURL.includes(repoMatch);
         }));
     }
@@ -34504,6 +34529,41 @@ class ArgoCDServer {
     }
 }
 
+;// CONCATENATED MODULE: ./src/github/getPullRequestChangedFiles.ts
+
+
+// Returns list of changed file paths for the current PR run, or `null` when not running on a pull_request-ish event.
+async function getPullRequestChangedFiles(actionInput) {
+    const pullRequest = github.context.payload.pull_request;
+    if (!pullRequest) {
+        return null;
+    }
+    const { owner, repo } = github.context.repo;
+    const pull_number = github.context.issue.number;
+    if (!pull_number) {
+        core.warning('Could not determine pull request number from GitHub context; skipping changed-file filtering.');
+        return null;
+    }
+    const octokit = github.getOctokit(actionInput.githubToken);
+    const files = (await octokit.paginate(octokit.rest.pulls.listFiles, {
+        owner,
+        repo,
+        pull_number,
+        per_page: 100
+    }));
+    const changed = [];
+    for (const f of files) {
+        if (f.filename) {
+            changed.push(f.filename);
+        }
+        // Include previous path for renames so app path matching still works.
+        if (f.status === 'renamed' && f.previous_filename) {
+            changed.push(f.previous_filename);
+        }
+    }
+    return changed;
+}
+
 ;// CONCATENATED MODULE: ./src/getActionInput.ts
 
 function getActionInput() {
@@ -34516,6 +34576,7 @@ function getActionInput() {
     }
     return {
         arch: process.env.ARCH || 'linux',
+        onlyChangedApps: core.getInput('only-changed-apps') === 'true',
         argocd: {
             excludePaths: core.getInput('argocd-exclude-paths').split(','),
             extraCliArgs,
@@ -34535,9 +34596,10 @@ function getActionInput() {
 
 
 
+
 run().catch(e => {
-    console.error(e);
-    core.setFailed(e);
+    core.error(e instanceof Error ? e.stack ?? e.message : String(e));
+    core.setFailed(e instanceof Error ? e.message : String(e));
 });
 async function run() {
     const actionInput = getActionInput();
@@ -34557,7 +34619,20 @@ async function run() {
         .filterByRepo(`${github.context.repo.owner}/${github.context.repo.repo}`)
         .filterByTargetRevision()
         .filterByExcludedPath(actionInput.argocd.excludePaths);
-    core.info(`Found apps: ${appLocalCollection.apps.map(a => a.metadata.name).join(', ')}`);
+    if (actionInput.onlyChangedApps) {
+        const changedFiles = await getPullRequestChangedFiles(actionInput);
+        if (changedFiles) {
+            const beforeCount = appLocalCollection.apps.length;
+            appLocalCollection = appLocalCollection.filterByChangedFiles(changedFiles);
+            core.info(`PR changed-files filtering enabled. Changed files: ${changedFiles.length}. Apps in scope: ${appLocalCollection.apps.length}/${beforeCount}.`);
+            core.debug(`Changed files: ${changedFiles.join(', ')}`);
+        }
+        else {
+            core.warning('Input `only-changed-apps` was enabled but this is not a pull_request event; running diffs for all repo apps.');
+        }
+    }
+    core.info(`Apps in scope: ${appLocalCollection.apps.length}`);
+    core.debug(`Apps in scope: ${appLocalCollection.apps.map(a => a.metadata.name).join(', ')}`);
     let appDiffs = await argocdServer.getAppCollectionLocalDiffs(appLocalCollection);
     // Get diffs for apps of apps with targetRevision changes from local app diffs.
     // Note that this won't include any other changes to the App of App (e.g., Helm
