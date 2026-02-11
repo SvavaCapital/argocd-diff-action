@@ -46,6 +46,7 @@ jobs:
 
 | Name  | Required | Default | Description |
 | :---: | :------: | :-----: | ----------- |
+| `only-changed-apps` | false | false | Only run diffs for ArgoCD Applications whose spec.source.path contains files changed in the pull request |
 | `argocd-server-fqdn` | true |  | ArgoCD server FQDN (i.e., without the protocol) |
 | `argocd-server-tls` | false | true | Use TLS to communicate with ArgoCD |
 | `argocd-token` | true |  | ArgoCD token for a local or project-scoped user https://argoproj.github.io/argo-cd/operator-manual/user-management/#local-usersaccounts-v15 |

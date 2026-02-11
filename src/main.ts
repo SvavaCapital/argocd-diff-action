@@ -4,12 +4,13 @@ import * as github from '@actions/github';
 import { type AppTargetRevision } from './argocd/AppTargetRevision.js';
 import { ArgoCDServer } from './argocd/ArgoCDServer.js';
 import { type Diff } from './Diff.js';
+import { getPullRequestChangedFiles } from './github/getPullRequestChangedFiles.js';
 import { scrubSecrets } from './lib.js';
 import getActionInput, { ActionInput } from './getActionInput.js';
 
 run().catch(e => {
-  console.error(e);
-  core.setFailed(e);
+  core.error(e instanceof Error ? e.stack ?? e.message : String(e));
+  core.setFailed(e instanceof Error ? e.message : String(e));
 });
 
 async function run(): Promise<void> {
@@ -34,7 +35,24 @@ async function run(): Promise<void> {
     .filterByTargetRevision()
     .filterByExcludedPath(actionInput.argocd.excludePaths);
 
-  core.info(`Found apps: ${appLocalCollection.apps.map(a => a.metadata.name).join(', ')}`);
+  if (actionInput.onlyChangedApps) {
+    const changedFiles = await getPullRequestChangedFiles(actionInput);
+    if (changedFiles) {
+      const beforeCount = appLocalCollection.apps.length;
+      appLocalCollection = appLocalCollection.filterByChangedFiles(changedFiles);
+      core.info(
+        `PR changed-files filtering enabled. Changed files: ${changedFiles.length}. Apps in scope: ${appLocalCollection.apps.length}/${beforeCount}.`
+      );
+      core.debug(`Changed files: ${changedFiles.join(', ')}`);
+    } else {
+      core.warning(
+        'Input `only-changed-apps` was enabled but this is not a pull_request event; running diffs for all repo apps.'
+      );
+    }
+  }
+
+  core.info(`Apps in scope: ${appLocalCollection.apps.length}`);
+  core.debug(`Apps in scope: ${appLocalCollection.apps.map(a => a.metadata.name).join(', ')}`);
 
   let appDiffs = await argocdServer.getAppCollectionLocalDiffs(appLocalCollection);
 

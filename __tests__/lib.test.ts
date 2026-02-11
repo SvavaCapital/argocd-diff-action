@@ -18,6 +18,7 @@ test('execCommand returns ExecResult', async () => {
 test('execCommand returns an err on failure', async () => {
   await expect(execCommand('badBinary')).rejects.toMatchObject({
     stdout: '',
-    stderr: '/bin/sh: 1: badBinary: not found\n'
+    // stderr differs across platforms/shells (e.g. "not found" vs "command not found")
+    stderr: expect.stringMatching(/badBinary: (not found|command not found)/)
   });
 });

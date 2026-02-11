@@ -22,6 +22,9 @@
 
     /* If your code doesn't run in the DOM: */
     "lib": ["es2022"],
+
+    /* Prevent TS from auto-including unrelated @types packages */
+    "types": ["node"]
   },
   "include": [
     "src"

@@ -2,6 +2,10 @@ name: 'ArgoCD Diff'
 description: 'Diffs all ArgoCD apps in the repo, and provides the diff as a PR comment'
 author: 'argocd-diff-action'
 inputs:
+  only-changed-apps:
+    description: Only run diffs for ArgoCD Applications whose spec.source.path contains files changed in the pull request
+    default: 'false'
+    required: false
   argocd-server-fqdn: 
     description: ArgoCD server FQDN (i.e., without the protocol)
     required: true

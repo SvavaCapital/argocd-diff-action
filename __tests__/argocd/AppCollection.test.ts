@@ -25,6 +25,22 @@ test('filterByExcludedPath with empty ExcludedPaths returns early', () => {
   expect(appCollection().filterByExcludedPath([])).toStrictEqual(appCollection());
 });
 
+test('filterByChangedFiles keeps only apps whose path contains a changed file', () => {
+  expect(
+    appCollection().filterByChangedFiles(['deploy/app-two/values.yaml', 'README.md'])
+  ).toStrictEqual(new AppCollection([appTwo()]));
+});
+
+test('filterByChangedFiles returns empty collection when no app paths match', () => {
+  expect(appCollection().filterByChangedFiles(['some/other/path/file.yaml'])).toStrictEqual(
+    new AppCollection([])
+  );
+});
+
+test('filterByChangedFiles with empty changedFiles returns empty collection', () => {
+  expect(appCollection().filterByChangedFiles([])).toStrictEqual(new AppCollection([]));
+});
+
 test('getAppByName returns an App', () => {
   expect(appCollection().getAppByName(appTwo().metadata.name)).toStrictEqual(appTwo());
 });
