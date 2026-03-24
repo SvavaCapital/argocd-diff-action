@@ -2,6 +2,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { type AppTargetRevision } from './argocd/AppTargetRevision.js';
+import { AppCollection } from './argocd/AppCollection.js';
 import { ArgoCDServer } from './argocd/ArgoCDServer.js';
 import { type Diff } from './Diff.js';
 import { getPullRequestChangedFiles } from './github/getPullRequestChangedFiles.js';
@@ -44,10 +45,30 @@ async function run(): Promise<void> {
         `PR changed-files filtering enabled. Changed files: ${changedFiles.length}. Apps in scope: ${appLocalCollection.apps.length}/${beforeCount}.`
       );
       core.debug(`Changed files: ${changedFiles.join(', ')}`);
+    } else if (actionInput.forceApps.length > 0) {
+      // Non-PR event (e.g. issue_comment) with explicit force-apps — scope to force-apps only.
+      core.info('Non-PR event with force-apps set: scoping diff to force-apps only.');
+      appLocalCollection = new AppCollection([]);
     } else {
       core.warning(
         'Input `only-changed-apps` was enabled but this is not a pull_request event; running diffs for all repo apps.'
       );
+    }
+  }
+
+  // Merge force-apps: add apps detected via env-values change mapping that aren't already in scope.
+  if (actionInput.forceApps.length > 0) {
+    core.info(`force-apps: merging ${actionInput.forceApps.length} app(s) from env-values detection: ${actionInput.forceApps.join(', ')}`);
+    const existingNames = new Set(appLocalCollection.apps.map(a => a.metadata.name));
+    const appsToAdd = actionInput.forceApps
+      .filter(name => !existingNames.has(name))
+      .map(name => appAllCollection.getAppByName(name))
+      .filter((app): app is NonNullable<typeof app> => app !== undefined);
+    if (appsToAdd.length > 0) {
+      appLocalCollection = new AppCollection([...appLocalCollection.apps, ...appsToAdd]);
+      core.info(`force-apps: added ${appsToAdd.length} app(s). Total apps in scope: ${appLocalCollection.apps.length}.`);
+    } else {
+      core.info('force-apps: all specified apps are already in scope or not found in ArgoCD.');
     }
   }
 
@@ -71,10 +92,12 @@ async function run(): Promise<void> {
 async function postDiffComment(diffs: Diff[], actionInput: ActionInput): Promise<void> {
   const octokit = github.getOctokit(actionInput.githubToken);
   const { owner, repo } = github.context.repo;
-  const sha = github.context.payload.pull_request?.head?.sha;
+  const sha = actionInput.headSha || github.context.payload.pull_request?.head?.sha;
 
-  const commitLink = `https://github.com/${owner}/${repo}/pull/${github.context.issue.number}/commits/${sha}`;
-  const shortCommitSha = String(sha).substring(0, 7);
+  const commitLink = sha
+    ? `https://github.com/${owner}/${repo}/pull/${github.context.issue.number}/commits/${sha}`
+    : `https://github.com/${owner}/${repo}/pull/${github.context.issue.number}`;
+  const shortCommitSha = sha ? String(sha).substring(0, 7) : 'on-demand';
 
   const diffOutput = diffs.map(
     ({ app, diff, error }) => `

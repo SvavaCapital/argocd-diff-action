@@ -27,8 +27,16 @@ inputs:
     description: Extra arguments to pass to the argocd CLI
     default: --grpc-web
     required: false
-  argocd-exclude-paths: 
+  argocd-exclude-paths:
     description: ArgoCD app paths to exclude in comma separated list
+    default: ''
+    required: false
+  force-apps:
+    description: Comma-separated list of ArgoCD app names to always diff, regardless of changed files (used to force diffs when env-values change)
+    default: ''
+    required: false
+  head-sha:
+    description: Override commit SHA for the diff comment header (used when triggering from non-PR events like issue_comment)
     default: ''
     required: false
 runs:

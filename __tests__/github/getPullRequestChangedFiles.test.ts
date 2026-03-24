@@ -81,8 +81,10 @@ describe('getPullRequestChangedFiles', () => {
 function fakeActionInput(): ActionInput {
   return {
     arch: 'linux',
+    headSha: '',
     githubToken: 'fake',
     onlyChangedApps: true,
+    forceApps: [],
     argocd: {
       excludePaths: [],
       extraCliArgs: '--grpc-web',

@@ -34289,10 +34289,6 @@ var __webpack_exports__ = {};
 var core = __nccwpck_require__(7484);
 // EXTERNAL MODULE: ./node_modules/@actions/github/lib/github.js
 var github = __nccwpck_require__(3228);
-// EXTERNAL MODULE: external "fs"
-var external_fs_ = __nccwpck_require__(9896);
-// EXTERNAL MODULE: ./node_modules/@actions/tool-cache/lib/tool-cache.js
-var tool_cache = __nccwpck_require__(3472);
 ;// CONCATENATED MODULE: ./src/argocd/AppCollection.ts
 class AppCollection {
     apps;
@@ -34362,6 +34358,10 @@ class AppCollection {
     }
 }
 
+// EXTERNAL MODULE: external "fs"
+var external_fs_ = __nccwpck_require__(9896);
+// EXTERNAL MODULE: ./node_modules/@actions/tool-cache/lib/tool-cache.js
+var tool_cache = __nccwpck_require__(3472);
 // EXTERNAL MODULE: external "child_process"
 var external_child_process_ = __nccwpck_require__(5317);
 ;// CONCATENATED MODULE: ./src/lib.ts
@@ -34574,9 +34574,13 @@ function getActionInput() {
     if (!useTls) {
         extraCliArgs += ' --plaintext';
     }
+    const forceAppsRaw = core.getInput('force-apps').trim();
+    const forceApps = forceAppsRaw ? forceAppsRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
     return {
         arch: process.env.ARCH || 'linux',
+        headSha: core.getInput('head-sha').trim(),
         onlyChangedApps: core.getInput('only-changed-apps') === 'true',
+        forceApps,
         argocd: {
             excludePaths: core.getInput('argocd-exclude-paths').split(','),
             extraCliArgs,
@@ -34591,6 +34595,7 @@ function getActionInput() {
 }
 
 ;// CONCATENATED MODULE: ./src/main.ts
+
 
 
 
@@ -34627,8 +34632,29 @@ async function run() {
             core.info(`PR changed-files filtering enabled. Changed files: ${changedFiles.length}. Apps in scope: ${appLocalCollection.apps.length}/${beforeCount}.`);
             core.debug(`Changed files: ${changedFiles.join(', ')}`);
         }
+        else if (actionInput.forceApps.length > 0) {
+            // Non-PR event (e.g. issue_comment) with explicit force-apps — scope to force-apps only.
+            core.info('Non-PR event with force-apps set: scoping diff to force-apps only.');
+            appLocalCollection = new AppCollection([]);
+        }
         else {
             core.warning('Input `only-changed-apps` was enabled but this is not a pull_request event; running diffs for all repo apps.');
+        }
+    }
+    // Merge force-apps: add apps detected via env-values change mapping that aren't already in scope.
+    if (actionInput.forceApps.length > 0) {
+        core.info(`force-apps: merging ${actionInput.forceApps.length} app(s) from env-values detection: ${actionInput.forceApps.join(', ')}`);
+        const existingNames = new Set(appLocalCollection.apps.map(a => a.metadata.name));
+        const appsToAdd = actionInput.forceApps
+            .filter(name => !existingNames.has(name))
+            .map(name => appAllCollection.getAppByName(name))
+            .filter((app) => app !== undefined);
+        if (appsToAdd.length > 0) {
+            appLocalCollection = new AppCollection([...appLocalCollection.apps, ...appsToAdd]);
+            core.info(`force-apps: added ${appsToAdd.length} app(s). Total apps in scope: ${appLocalCollection.apps.length}.`);
+        }
+        else {
+            core.info('force-apps: all specified apps are already in scope or not found in ArgoCD.');
         }
     }
     core.info(`Apps in scope: ${appLocalCollection.apps.length}`);
@@ -34644,9 +34670,11 @@ async function run() {
 async function postDiffComment(diffs, actionInput) {
     const octokit = github.getOctokit(actionInput.githubToken);
     const { owner, repo } = github.context.repo;
-    const sha = github.context.payload.pull_request?.head?.sha;
-    const commitLink = `https://github.com/${owner}/${repo}/pull/${github.context.issue.number}/commits/${sha}`;
-    const shortCommitSha = String(sha).substring(0, 7);
+    const sha = actionInput.headSha || github.context.payload.pull_request?.head?.sha;
+    const commitLink = sha
+        ? `https://github.com/${owner}/${repo}/pull/${github.context.issue.number}/commits/${sha}`
+        : `https://github.com/${owner}/${repo}/pull/${github.context.issue.number}`;
+    const shortCommitSha = sha ? String(sha).substring(0, 7) : 'on-demand';
     const diffOutput = diffs.map(({ app, diff, error }) => `
 App: [\`${app.metadata.name}\`](${actionInput.argocd.uri}/applications/${app.metadata.name})
 YAML generation: ${error ? ' Error 🛑' : 'Success 🟢'}

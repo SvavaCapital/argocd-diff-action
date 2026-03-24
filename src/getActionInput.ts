@@ -3,7 +3,9 @@ import * as core from '@actions/core';
 export interface ActionInput {
   arch: string;
   githubToken: string;
+  headSha: string;
   onlyChangedApps?: boolean;
+  forceApps: string[];
   argocd: {
     excludePaths: string[];
     extraCliArgs: string;
@@ -25,9 +27,14 @@ export default function getActionInput(): ActionInput {
     extraCliArgs += ' --plaintext';
   }
 
+  const forceAppsRaw = core.getInput('force-apps').trim();
+  const forceApps = forceAppsRaw ? forceAppsRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+
   return {
     arch: process.env.ARCH || 'linux',
+    headSha: core.getInput('head-sha').trim(),
     onlyChangedApps: core.getInput('only-changed-apps') === 'true',
+    forceApps,
     argocd: {
       excludePaths: core.getInput('argocd-exclude-paths').split(','),
       extraCliArgs,
