@@ -206,6 +206,8 @@ function appCollection(): AppCollection {
 function argocdServer(): ArgoCDServer {
   const actionInput: ActionInput = {
     arch: 'linux',
+    headSha: '',
+    forceApps: [],
     argocd: {
       excludePaths: [],
       extraCliArgs: '',
