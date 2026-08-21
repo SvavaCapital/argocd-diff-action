@@ -1,4 +1,4 @@
-import { type App } from './App.js';
+import { appSources, type App } from './App.js';
 
 
 export class AppCollection {
@@ -8,7 +8,9 @@ export class AppCollection {
     this.apps = apps;
   }
 
-  // Filters apps to those whose `spec.source.path` overlaps at least one changed file path 
+  // Filters apps to those where at least one source path overlaps a changed
+  // file path. Multi-source apps match on any of their sources, so a change to
+  // one source's path is enough to put the whole Application in scope.
   filterByChangedFiles(changedFiles: string[]): AppCollection {
     if (this.apps.length === 0) {
       return this;
@@ -23,26 +25,32 @@ export class AppCollection {
       .map(f => f.replace(/^\.\//, ''));
 
     return new AppCollection(
-      this.apps.filter(app => {
-        const appPathRaw = app.spec.source?.path;
-        if (!appPathRaw) {
-          return false;
-        }
+      this.apps.filter(app =>
+        appSources(app).some(source => {
+          const appPathRaw = source.path;
+          if (!appPathRaw) {
+            return false;
+          }
 
-        const appPath = appPathRaw.replace(/\/+$/, '').replace(/^\.\//, '');
+          const appPath = appPathRaw.replace(/\/+$/, '').replace(/^\.\//, '');
 
-        if (appPath === '.' || appPath === '') {
-          return true;
-        }
+          if (appPath === '.' || appPath === '') {
+            return true;
+          }
 
-        return normalizedChangedFiles.some(changedPath => {
-          const p = changedPath.replace(/\/+$/, '');
-          return p === appPath || p.startsWith(`${appPath}/`);
-        });
-      })
+          return normalizedChangedFiles.some(changedPath => {
+            const p = changedPath.replace(/\/+$/, '');
+            return p === appPath || p.startsWith(`${appPath}/`);
+          });
+        })
+      )
     );
   }
 
+  // Keeps apps that still have at least one path-bearing source outside the
+  // excluded set. An app is only dropped when every one of its paths is
+  // excluded — excluding one source of a multi-source app must not silently
+  // drop the diff for its other sources.
   filterByExcludedPath(excludedPaths: string[]): AppCollection {
     if (this.apps.length === 0) {
       return this;
@@ -53,9 +61,11 @@ export class AppCollection {
     }
 
     return new AppCollection(
-      this.apps.filter(app => {
-        return app.spec.source?.path !== undefined && !excludedPaths.includes(app.spec.source.path);
-      })
+      this.apps.filter(app =>
+        appSources(app).some(
+          source => source.path !== undefined && !excludedPaths.includes(source.path)
+        )
+      )
     );
   }
 
@@ -65,9 +75,11 @@ export class AppCollection {
     }
 
     return new AppCollection(
-      this.apps.filter(app => {
-        return app.spec.source?.repoURL !== undefined && app.spec.source.repoURL.includes(repoMatch);
-      })
+      this.apps.filter(app =>
+        appSources(app).some(
+          source => source.repoURL !== undefined && source.repoURL.includes(repoMatch)
+        )
+      )
     );
   }
 
@@ -76,9 +88,12 @@ export class AppCollection {
       return this;
     }
     return new AppCollection(
-      this.apps.filter(app => {
-        return app.spec.source?.targetRevision !== undefined && targetRevisions.includes(app.spec.source.targetRevision);
-      })
+      this.apps.filter(app =>
+        appSources(app).some(
+          source =>
+            source.targetRevision !== undefined && targetRevisions.includes(source.targetRevision)
+        )
+      )
     );
   }
 

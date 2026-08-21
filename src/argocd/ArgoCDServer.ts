@@ -2,7 +2,7 @@ import { chmodSync } from 'fs';
 import * as core from '@actions/core';
 import { downloadTool } from '@actions/tool-cache';
 
-import { type App } from './App.js';
+import { isMultiSource, sourcePositionForRepo, type App } from './App.js';
 import { AppCollection } from './AppCollection.js';
 import { type AppTargetRevision } from './AppTargetRevision.js';
 import { type Diff } from '../Diff.js';
@@ -15,12 +15,18 @@ export class ArgoCDServer {
   uri: string;
   fqdn: string;
   token: string;
+  headSha: string;
+  // "owner/repo" of the repository running the action. Used to pick which
+  // source of a multi-source Application to pin to the PR head.
+  repoMatch: string;
 
-  constructor(actionInput: ActionInput) {
+  constructor(actionInput: ActionInput, repoMatch = '') {
     this.uri = actionInput.argocd.uri;
     this.fqdn = actionInput.argocd.fqdn;
     this.token = actionInput.argocd.token;
     this.extraCommandArgs = actionInput.argocd.extraCliArgs;
+    this.headSha = actionInput.headSha;
+    this.repoMatch = repoMatch;
   }
 
   async installArgoCDCommand(version: string, arch = 'linux'): Promise<void> {
@@ -42,6 +48,10 @@ export class ArgoCDServer {
   }
 
   async getAppLocalDiff(app: App): Promise<Diff> {
+    if (isMultiSource(app)) {
+      return this.getAppMultiSourceDiff(app);
+    }
+
     if (app.spec.source?.path === undefined) {
       core.error(`Cannot diff ${app.metadata.name}, no source.path`);
 
@@ -49,6 +59,42 @@ export class ArgoCDServer {
     }
 
     return this.getAppDiff(app, [`--local=${app.spec.source.path}`]);
+  }
+
+  // Multi-source Applications cannot be diffed with `--local`: the CLI has no
+  // way to map one checked-out working tree onto N sources, and a source
+  // rendered by a config-management plugin cannot be rendered client-side at
+  // all. Ask the server to generate the manifests instead, pinning only the
+  // source that belongs to this repo to the PR head so every other source
+  // stays on its configured targetRevision.
+  //
+  // NOTE: `--revisions`/`--source-positions` cannot be combined with a plain
+  // `--revision`. A caller passing `--revision=...` through
+  // argocd-extra-cli-args will make the CLI reject multi-source diffs.
+  async getAppMultiSourceDiff(app: App): Promise<Diff> {
+    const position = sourcePositionForRepo(app, this.repoMatch);
+    if (position === undefined) {
+      core.error(
+        `Cannot diff ${app.metadata.name}, no source matching repo '${this.repoMatch}'`
+      );
+
+      return { app, diff: '' } as Diff;
+    }
+
+    if (!this.headSha) {
+      core.error(
+        `Cannot diff ${app.metadata.name}, a multi-source diff needs a head SHA ` +
+          '(set the `head-sha` input, or run on a pull_request event)'
+      );
+
+      return { app, diff: '' } as Diff;
+    }
+
+    return this.getAppDiff(app, [
+      '--server-side-generate',
+      `--source-positions=${position}`,
+      `--revisions=${this.headSha}`
+    ]);
   }
 
   async getAppRevisionDiff(app: App, targetRevision: string): Promise<Diff> {

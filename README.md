@@ -78,11 +78,19 @@ jobs:
 2. Fetches all of the Applications from the ArgoCD API using the `argocd-token`.
 3. Filters the Applications to the ones that are sourced from the current repo (using the context of the action),
    targeting the trunk of the repo, and are not in an excluded path.
-4. Runs `argocd app diff --local <path>` for each Application.
-5. If in the Application diff there is an Application with a change to its `targetRevision`, get the diff for it using
+4. Runs `argocd app diff --local <path>` for each single-source Application.
+5. For each **multi-source** Application (`spec.sources`), runs
+   `argocd app diff --server-side-generate --source-positions <n> --revisions <head-sha>` instead, where `<n>` is the
+   1-indexed position of the source whose `repoURL` is the current repo.
+    - `--local` cannot work here: the CLI has no way to map one working tree onto N sources, and a source rendered by a
+      config-management plugin cannot be rendered client-side at all.
+    - Only this repo's source is pinned to the PR head; the other sources stay on their configured `targetRevision`.
+    - **Do not pass `--revision` via `argocd-extra-cli-args`** when any Application is multi-source — the CLI rejects
+      `--revision` combined with `--revisions`/`--source-positions`.
+6. If in the Application diff there is an Application with a change to its `targetRevision`, get the diff for it using
    `--revision`.
     - Note that this won't include any other changes to the App of App (e.g., Helm value changes).
-6. Posts the diff output as a comment on the PR (updating the same comment if it already exists).
+7. Posts the diff output as a comment on the PR (updating the same comment if it already exists).
 
 ## Releases & Publishing
 

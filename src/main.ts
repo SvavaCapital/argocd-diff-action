@@ -16,7 +16,8 @@ run().catch(e => {
 
 async function run(): Promise<void> {
   const actionInput = getActionInput();
-  const argocdServer = new ArgoCDServer(actionInput);
+  const repoSlug = `${github.context.repo.owner}/${github.context.repo.repo}`;
+  const argocdServer = new ArgoCDServer(actionInput, repoSlug);
   await argocdServer.installArgoCDCommand(actionInput.argocd.cliVersion, actionInput.arch);
 
   let appAllCollection = await argocdServer.getAppCollection();
@@ -28,11 +29,12 @@ async function run(): Promise<void> {
     );
     return;
   }
-  // We can only run `diff --local` on files that are for this current repo.
-  // Filter Apps to those following the repo trunk, since that is what the PR is
-  // comparing against (in most cases).
+  // We can only diff Applications that have a source in this repo — `--local`
+  // for single-source apps, or a server-side generate pinned to this repo's
+  // source position for multi-source apps. Filter Apps to those following the
+  // repo trunk, since that is what the PR is comparing against (in most cases).
   let appLocalCollection = appAllCollection
-    .filterByRepo(`${github.context.repo.owner}/${github.context.repo.repo}`)
+    .filterByRepo(repoSlug)
     .filterByTargetRevision()
     .filterByExcludedPath(actionInput.argocd.excludePaths);
 
@@ -92,7 +94,8 @@ async function run(): Promise<void> {
 async function postDiffComment(diffs: Diff[], actionInput: ActionInput): Promise<void> {
   const octokit = github.getOctokit(actionInput.githubToken);
   const { owner, repo } = github.context.repo;
-  const sha = actionInput.headSha || github.context.payload.pull_request?.head?.sha;
+  // getActionInput already falls back to the PR head.
+  const sha = actionInput.headSha;
 
   const commitLink = sha
     ? `https://github.com/${owner}/${repo}/pull/${github.context.issue.number}/commits/${sha}`

@@ -1,4 +1,5 @@
 import * as core from '@actions/core';
+import * as github from '@actions/github';
 
 export interface ActionInput {
   arch: string;
@@ -32,7 +33,13 @@ export default function getActionInput(): ActionInput {
 
   return {
     arch: process.env.ARCH || 'linux',
-    headSha: core.getInput('head-sha').trim(),
+    // `head-sha` is only supplied by non-PR callers (e.g. issue_comment). Fall
+    // back to the PR head so multi-source diffs, which must pin a revision, work
+    // on a plain pull_request event without the caller passing anything.
+    headSha:
+      core.getInput('head-sha').trim() ||
+      github.context.payload.pull_request?.head?.sha ||
+      '',
     onlyChangedApps: core.getInput('only-changed-apps') === 'true',
     forceApps,
     argocd: {
