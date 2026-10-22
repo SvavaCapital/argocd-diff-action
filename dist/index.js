@@ -34785,9 +34785,12 @@ ${diff}
     const header = `${headerPrefix}
 ## ArgoCD Diff ${actionInput.argocd.fqdn} for commit [\`${shortCommitSha}\`](${commitLink})
 `;
+    const body = diffs.length
+        ? diffOutput.join('\n')
+        : '_No Application in this repo produced a diff for this PR._';
     const output = scrubSecrets(`${header}
 _Updated at ${new Date().toLocaleString('en-CA', { timeZone: 'Asia/Kolkata' })} IST_
-  ${diffOutput.join('\n')}
+  ${body}
 
 | Legend | Status |
 | :---:  | :---   |
@@ -34801,7 +34804,8 @@ _Updated at ${new Date().toLocaleString('en-CA', { timeZone: 'Asia/Kolkata' })} 
         repo
     });
     const existingComment = commentsResponse.data.find(d => d.body?.includes(headerPrefix) ?? false);
-    // Existing comments should be updated even if there are no changes this round in order to indicate that
+    // Comment unconditionally, the way the drift report does: a silent green check
+    // is indistinguishable from the action never having run.
     if (existingComment) {
         octokit.rest.issues.updateComment({
             owner,
@@ -34809,9 +34813,8 @@ _Updated at ${new Date().toLocaleString('en-CA', { timeZone: 'Asia/Kolkata' })} 
             comment_id: existingComment.id,
             body: output
         });
-        // Only post a new comment when there are changes
     }
-    else if (diffs.length) {
+    else {
         octokit.rest.issues.createComment({
             issue_number: github.context.issue.number,
             owner,
