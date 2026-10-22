@@ -2,7 +2,7 @@ import { chmodSync } from 'fs';
 import * as core from '@actions/core';
 import { downloadTool } from '@actions/tool-cache';
 
-import { isMultiSource, sourcePositionForRepo, type App } from './App.js';
+import { appSources, isMultiSource, sourcePositionForRepo, type App } from './App.js';
 import { AppCollection } from './AppCollection.js';
 import { type AppTargetRevision } from './AppTargetRevision.js';
 import { type Diff } from '../Diff.js';
@@ -164,7 +164,10 @@ export class ArgoCDServer {
   async getAppCollectionLocalDiffs(appCollection: AppCollection): Promise<Diff[]> {
     let appCollectionDiffPromises: Promise<Diff>[] = [];
     appCollection.apps.forEach(app => {
-      if (app.spec.source?.path !== undefined) {
+      // Must read through appSources(): a multi-source App leaves `spec.source`
+      // unset, so gating on it skipped every multi-source App before
+      // getAppLocalDiff could route it to the server-side generate path.
+      if (appSources(app).some(source => source.path !== undefined)) {
         appCollectionDiffPromises.push(this.getAppLocalDiff(app));
       }
     });

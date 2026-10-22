@@ -158,6 +158,41 @@ describe('ArgoCDServer multi-source diff', () => {
   });
 });
 
+// getAppLocalDiff routes multi-source apps correctly on its own, so the cases
+// above pass even when the collection-level caller never reaches it. These
+// drive the real entry point instead.
+describe('ArgoCDServer.getAppCollectionLocalDiffs source selection', () => {
+  beforeEach(() => {
+    mockedExecCommand.mockReset();
+  });
+
+  test('dispatches a diff for a multi-source app', async () => {
+    mockedExecCommand.mockReturnValue(Promise.resolve(execResult()));
+
+    await argocdServer().getAppCollectionLocalDiffs(new AppCollection([multiSourceApp()]));
+
+    expect(mockedExecCommand).toHaveBeenCalledWith(
+      expect.stringContaining('--server-side-generate')
+    );
+  });
+
+  test('dispatches a diff for a single-source app', async () => {
+    mockedExecCommand.mockReturnValue(Promise.resolve(execResult()));
+
+    await argocdServer().getAppCollectionLocalDiffs(new AppCollection([singleSourceApp()]));
+
+    expect(mockedExecCommand).toHaveBeenCalledWith(
+      expect.stringContaining(`--local=${singleSourceApp().spec.source?.path}`)
+    );
+  });
+
+  test('runs nothing for an app with no source at all', async () => {
+    await argocdServer().getAppCollectionLocalDiffs(new AppCollection([sourcelessApp()]));
+
+    expect(mockedExecCommand).not.toHaveBeenCalled();
+  });
+});
+
 function multiSourceApp(): App {
   return {
     metadata: { name: 'alfred-nonprod-mumbai-1-34' },

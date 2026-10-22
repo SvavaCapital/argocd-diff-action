@@ -34551,7 +34551,10 @@ class ArgoCDServer {
     async getAppCollectionLocalDiffs(appCollection) {
         let appCollectionDiffPromises = [];
         appCollection.apps.forEach(app => {
-            if (app.spec.source?.path !== undefined) {
+            // Must read through appSources(): a multi-source App leaves `spec.source`
+            // unset, so gating on it skipped every multi-source App before
+            // getAppLocalDiff could route it to the server-side generate path.
+            if (appSources(app).some(source => source.path !== undefined)) {
                 appCollectionDiffPromises.push(this.getAppLocalDiff(app));
             }
         });
