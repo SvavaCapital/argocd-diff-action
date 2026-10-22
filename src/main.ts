@@ -16,7 +16,8 @@ run().catch(e => {
 
 async function run(): Promise<void> {
   const actionInput = getActionInput();
-  const argocdServer = new ArgoCDServer(actionInput);
+  const repoSlug = `${github.context.repo.owner}/${github.context.repo.repo}`;
+  const argocdServer = new ArgoCDServer(actionInput, repoSlug);
   await argocdServer.installArgoCDCommand(actionInput.argocd.cliVersion, actionInput.arch);
 
   let appAllCollection = await argocdServer.getAppCollection();
@@ -28,11 +29,12 @@ async function run(): Promise<void> {
     );
     return;
   }
-  // We can only run `diff --local` on files that are for this current repo.
-  // Filter Apps to those following the repo trunk, since that is what the PR is
-  // comparing against (in most cases).
+  // We can only diff Applications that have a source in this repo — `--local`
+  // for single-source apps, or a server-side generate pinned to this repo's
+  // source position for multi-source apps. Filter Apps to those following the
+  // repo trunk, since that is what the PR is comparing against (in most cases).
   let appLocalCollection = appAllCollection
-    .filterByRepo(`${github.context.repo.owner}/${github.context.repo.repo}`)
+    .filterByRepo(repoSlug)
     .filterByTargetRevision()
     .filterByExcludedPath(actionInput.argocd.excludePaths);
 
@@ -48,7 +50,7 @@ async function run(): Promise<void> {
     } else if (actionInput.forceApps.length > 0) {
       // Non-PR event (e.g. issue_comment) with explicit force-apps — scope to force-apps only.
       core.info('Non-PR event with force-apps set: scoping diff to force-apps only.');
-      appLocalCollection = new AppCollection([]);
+      appLocalCollection = new AppCollection([], repoSlug);
     } else {
       core.warning(
         'Input `only-changed-apps` was enabled but this is not a pull_request event; running diffs for all repo apps.'
@@ -65,7 +67,10 @@ async function run(): Promise<void> {
       .map(name => appAllCollection.getAppByName(name))
       .filter((app): app is NonNullable<typeof app> => app !== undefined);
     if (appsToAdd.length > 0) {
-      appLocalCollection = new AppCollection([...appLocalCollection.apps, ...appsToAdd]);
+      appLocalCollection = new AppCollection(
+        [...appLocalCollection.apps, ...appsToAdd],
+        repoSlug
+      );
       core.info(`force-apps: added ${appsToAdd.length} app(s). Total apps in scope: ${appLocalCollection.apps.length}.`);
     } else {
       core.info('force-apps: all specified apps are already in scope or not found in ArgoCD.');
@@ -92,7 +97,8 @@ async function run(): Promise<void> {
 async function postDiffComment(diffs: Diff[], actionInput: ActionInput): Promise<void> {
   const octokit = github.getOctokit(actionInput.githubToken);
   const { owner, repo } = github.context.repo;
-  const sha = actionInput.headSha || github.context.payload.pull_request?.head?.sha;
+  // getActionInput already falls back to the PR head.
+  const sha = actionInput.headSha;
 
   const commitLink = sha
     ? `https://github.com/${owner}/${repo}/pull/${github.context.issue.number}/commits/${sha}`
@@ -143,9 +149,13 @@ ${diff}
 ## ArgoCD Diff ${actionInput.argocd.fqdn} for commit [\`${shortCommitSha}\`](${commitLink})
 `;
 
+  const body = diffs.length
+    ? diffOutput.join('\n')
+    : '_No Application in this repo produced a diff for this PR._';
+
   const output = scrubSecrets(`${header}
 _Updated at ${new Date().toLocaleString('en-CA', { timeZone: 'Asia/Kolkata' })} IST_
-  ${diffOutput.join('\n')}
+  ${body}
 
 | Legend | Status |
 | :---:  | :---   |
@@ -164,7 +174,8 @@ _Updated at ${new Date().toLocaleString('en-CA', { timeZone: 'Asia/Kolkata' })} 
     d => d.body?.includes(headerPrefix) ?? false
   );
 
-  // Existing comments should be updated even if there are no changes this round in order to indicate that
+  // Comment unconditionally, the way the drift report does: a silent green check
+  // is indistinguishable from the action never having run.
   if (existingComment) {
     octokit.rest.issues.updateComment({
       owner,
@@ -172,8 +183,7 @@ _Updated at ${new Date().toLocaleString('en-CA', { timeZone: 'Asia/Kolkata' })} 
       comment_id: existingComment.id,
       body: output
     });
-    // Only post a new comment when there are changes
-  } else if (diffs.length) {
+  } else {
     octokit.rest.issues.createComment({
       issue_number: github.context.issue.number,
       owner,

@@ -34289,25 +34289,69 @@ var __webpack_exports__ = {};
 var core = __nccwpck_require__(7484);
 // EXTERNAL MODULE: ./node_modules/@actions/github/lib/github.js
 var github = __nccwpck_require__(3228);
+;// CONCATENATED MODULE: ./src/argocd/App.ts
+// Every source of an Application, whether single- or multi-source. Returns an
+// empty array for an Application with neither, so callers can filter without
+// special-casing.
+function appSources(app) {
+    if (app.spec.sources && app.spec.sources.length > 0) {
+        return app.spec.sources;
+    }
+    return app.spec.source ? [app.spec.source] : [];
+}
+// Sources belonging to `repoMatch`. Path- and revision-based filtering must use
+// this rather than appSources(): a source from another repo can carry path '.'
+// or track main, which would put the Application in scope on changes that touch
+// nothing it renders from this repo. An empty repoMatch keeps every source.
+function sourcesForRepo(app, repoMatch) {
+    const sources = appSources(app);
+    if (!repoMatch) {
+        return sources;
+    }
+    return sources.filter(source => source.repoURL?.includes(repoMatch));
+}
+function isMultiSource(app) {
+    return (app.spec.sources?.length ?? 0) > 0;
+}
+// Position of the first source whose repoURL contains `repoMatch`, 1-indexed
+// because that is the indexing `argocd app diff --source-positions` expects.
+// Returns undefined when no source belongs to that repo.
+function sourcePositionForRepo(app, repoMatch) {
+    if (!repoMatch) {
+        return undefined;
+    }
+    const index = appSources(app).findIndex(source => source.repoURL?.includes(repoMatch));
+    return index === -1 ? undefined : index + 1;
+}
+
 ;// CONCATENATED MODULE: ./src/argocd/AppCollection.ts
+
 class AppCollection {
     apps;
-    constructor(apps) {
+    // "owner/repo" the diff is being generated for. Path- and revision-based
+    // filters consider only sources from this repo; see sourcesForRepo. Empty
+    // means "unknown repo", which falls back to considering every source.
+    repoMatch;
+    constructor(apps, repoMatch = '') {
         this.apps = apps;
+        this.repoMatch = repoMatch;
     }
-    // Filters apps to those whose `spec.source.path` overlaps at least one changed file path 
+    // Filters apps to those where at least one source path in this repo overlaps
+    // a changed file path. Multi-source apps match on any of their sources in
+    // this repo, so a change under one such source's path is enough to put the
+    // whole Application in scope.
     filterByChangedFiles(changedFiles) {
         if (this.apps.length === 0) {
             return this;
         }
         if (changedFiles.length === 0) {
-            return new AppCollection([]);
+            return new AppCollection([], this.repoMatch);
         }
         const normalizedChangedFiles = changedFiles
             .filter(Boolean)
             .map(f => f.replace(/^\.\//, ''));
-        return new AppCollection(this.apps.filter(app => {
-            const appPathRaw = app.spec.source?.path;
+        return new AppCollection(this.apps.filter(app => sourcesForRepo(app, this.repoMatch).some(source => {
+            const appPathRaw = source.path;
             if (!appPathRaw) {
                 return false;
             }
@@ -34319,8 +34363,12 @@ class AppCollection {
                 const p = changedPath.replace(/\/+$/, '');
                 return p === appPath || p.startsWith(`${appPath}/`);
             });
-        }));
+        })), this.repoMatch);
     }
+    // Keeps apps that still have at least one path-bearing source in this repo
+    // outside the excluded set. An app is only dropped when every one of its
+    // paths here is excluded — excluding one source of a multi-source app must
+    // not silently drop the diff for its other sources in this repo.
     filterByExcludedPath(excludedPaths) {
         if (this.apps.length === 0) {
             return this;
@@ -34328,25 +34376,23 @@ class AppCollection {
         if (excludedPaths.length === 0) {
             return this;
         }
-        return new AppCollection(this.apps.filter(app => {
-            return app.spec.source?.path !== undefined && !excludedPaths.includes(app.spec.source.path);
-        }));
+        return new AppCollection(this.apps.filter(app => sourcesForRepo(app, this.repoMatch).some(source => source.path !== undefined && !excludedPaths.includes(source.path))), this.repoMatch);
     }
     filterByRepo(repoMatch) {
         if (this.apps.length === 0) {
             return this;
         }
-        return new AppCollection(this.apps.filter(app => {
-            return app.spec.source?.repoURL !== undefined && app.spec.source.repoURL.includes(repoMatch);
-        }));
+        return new AppCollection(this.apps.filter(app => appSources(app).some(source => source.repoURL !== undefined && source.repoURL.includes(repoMatch))), 
+        // Membership is decided here, so this is where an unknown repoMatch is learnt.
+        this.repoMatch || repoMatch);
     }
+    // Only this repo's sources are considered: the PR compares against this
+    // repo's trunk, and another source tracking main says nothing about that.
     filterByTargetRevision(targetRevisions = ['master', 'main', 'HEAD']) {
         if (this.apps.length === 0) {
             return this;
         }
-        return new AppCollection(this.apps.filter(app => {
-            return app.spec.source?.targetRevision !== undefined && targetRevisions.includes(app.spec.source.targetRevision);
-        }));
+        return new AppCollection(this.apps.filter(app => sourcesForRepo(app, this.repoMatch).some(source => source.targetRevision !== undefined && targetRevisions.includes(source.targetRevision))), this.repoMatch);
     }
     getAppByName(name) {
         if (this.apps.length === 0) {
@@ -34400,17 +34446,24 @@ function scrubSecrets(input) {
 
 
 
+
 class ArgoCDServer {
     binaryPath = 'bin/argo';
     extraCommandArgs;
     uri;
     fqdn;
     token;
-    constructor(actionInput) {
+    headSha;
+    // "owner/repo" of the repository running the action. Used to pick which
+    // source of a multi-source Application to pin to the PR head.
+    repoMatch;
+    constructor(actionInput, repoMatch = '') {
         this.uri = actionInput.argocd.uri;
         this.fqdn = actionInput.argocd.fqdn;
         this.token = actionInput.argocd.token;
         this.extraCommandArgs = actionInput.argocd.extraCliArgs;
+        this.headSha = actionInput.headSha;
+        this.repoMatch = repoMatch;
     }
     async installArgoCDCommand(version, arch = 'linux') {
         if (version == '') {
@@ -34425,11 +34478,41 @@ class ArgoCDServer {
         return execCommand(cmd);
     }
     async getAppLocalDiff(app) {
+        if (isMultiSource(app)) {
+            return this.getAppMultiSourceDiff(app);
+        }
         if (app.spec.source?.path === undefined) {
             core.error(`Cannot diff ${app.metadata.name}, no source.path`);
             return { app, diff: '' };
         }
         return this.getAppDiff(app, [`--local=${app.spec.source.path}`]);
+    }
+    // Multi-source Applications cannot be diffed with `--local`: the CLI has no
+    // way to map one checked-out working tree onto N sources, and a source
+    // rendered by a config-management plugin cannot be rendered client-side at
+    // all. Ask the server to generate the manifests instead, pinning only the
+    // source that belongs to this repo to the PR head so every other source
+    // stays on its configured targetRevision.
+    //
+    // NOTE: `--revisions`/`--source-positions` cannot be combined with a plain
+    // `--revision`. A caller passing `--revision=...` through
+    // argocd-extra-cli-args will make the CLI reject multi-source diffs.
+    async getAppMultiSourceDiff(app) {
+        const position = sourcePositionForRepo(app, this.repoMatch);
+        if (position === undefined) {
+            core.error(`Cannot diff ${app.metadata.name}, no source matching repo '${this.repoMatch}'`);
+            return { app, diff: '' };
+        }
+        if (!this.headSha) {
+            core.error(`Cannot diff ${app.metadata.name}, a multi-source diff needs a head SHA ` +
+                '(set the `head-sha` input, or run on a pull_request event)');
+            return { app, diff: '' };
+        }
+        return this.getAppDiff(app, [
+            '--server-side-generate',
+            `--source-positions=${position}`,
+            `--revisions=${this.headSha}`
+        ]);
     }
     async getAppRevisionDiff(app, targetRevision) {
         return this.getAppDiff(app, [`--revision=${targetRevision}`]);
@@ -34479,7 +34562,7 @@ class ArgoCDServer {
     }
     async getAppCollection() {
         let responseJson = await this.api('v1/applications');
-        return new AppCollection(responseJson.items);
+        return new AppCollection(responseJson.items, this.repoMatch);
     }
     async getServerVersion() {
         let responseJson = await this.api('version');
@@ -34489,7 +34572,10 @@ class ArgoCDServer {
     async getAppCollectionLocalDiffs(appCollection) {
         let appCollectionDiffPromises = [];
         appCollection.apps.forEach(app => {
-            if (app.spec.source?.path !== undefined) {
+            // Must read through appSources(): a multi-source App leaves `spec.source`
+            // unset, so gating on it skipped every multi-source App before
+            // getAppLocalDiff could route it to the server-side generate path.
+            if (appSources(app).some(source => source.path !== undefined)) {
                 appCollectionDiffPromises.push(this.getAppLocalDiff(app));
             }
         });
@@ -34566,6 +34652,7 @@ async function getPullRequestChangedFiles(actionInput) {
 
 ;// CONCATENATED MODULE: ./src/getActionInput.ts
 
+
 function getActionInput() {
     const useTls = core.getInput('argocd-server-tls') === 'true';
     const fqdn = core.getInput('argocd-server-fqdn');
@@ -34578,7 +34665,12 @@ function getActionInput() {
     const forceApps = forceAppsRaw ? forceAppsRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
     return {
         arch: process.env.ARCH || 'linux',
-        headSha: core.getInput('head-sha').trim(),
+        // `head-sha` is only supplied by non-PR callers (e.g. issue_comment). Fall
+        // back to the PR head so multi-source diffs, which must pin a revision, work
+        // on a plain pull_request event without the caller passing anything.
+        headSha: core.getInput('head-sha').trim() ||
+            github.context.payload.pull_request?.head?.sha ||
+            '',
         onlyChangedApps: core.getInput('only-changed-apps') === 'true',
         forceApps,
         argocd: {
@@ -34608,7 +34700,8 @@ run().catch(e => {
 });
 async function run() {
     const actionInput = getActionInput();
-    const argocdServer = new ArgoCDServer(actionInput);
+    const repoSlug = `${github.context.repo.owner}/${github.context.repo.repo}`;
+    const argocdServer = new ArgoCDServer(actionInput, repoSlug);
     await argocdServer.installArgoCDCommand(actionInput.argocd.cliVersion, actionInput.arch);
     let appAllCollection = await argocdServer.getAppCollection();
     if (appAllCollection.apps == null) {
@@ -34617,11 +34710,12 @@ async function run() {
         core.warning('No Applications were returned from Argo CD. This may be the result of insufficient privileges.');
         return;
     }
-    // We can only run `diff --local` on files that are for this current repo.
-    // Filter Apps to those following the repo trunk, since that is what the PR is
-    // comparing against (in most cases).
+    // We can only diff Applications that have a source in this repo — `--local`
+    // for single-source apps, or a server-side generate pinned to this repo's
+    // source position for multi-source apps. Filter Apps to those following the
+    // repo trunk, since that is what the PR is comparing against (in most cases).
     let appLocalCollection = appAllCollection
-        .filterByRepo(`${github.context.repo.owner}/${github.context.repo.repo}`)
+        .filterByRepo(repoSlug)
         .filterByTargetRevision()
         .filterByExcludedPath(actionInput.argocd.excludePaths);
     if (actionInput.onlyChangedApps) {
@@ -34635,7 +34729,7 @@ async function run() {
         else if (actionInput.forceApps.length > 0) {
             // Non-PR event (e.g. issue_comment) with explicit force-apps — scope to force-apps only.
             core.info('Non-PR event with force-apps set: scoping diff to force-apps only.');
-            appLocalCollection = new AppCollection([]);
+            appLocalCollection = new AppCollection([], repoSlug);
         }
         else {
             core.warning('Input `only-changed-apps` was enabled but this is not a pull_request event; running diffs for all repo apps.');
@@ -34650,7 +34744,7 @@ async function run() {
             .map(name => appAllCollection.getAppByName(name))
             .filter((app) => app !== undefined);
         if (appsToAdd.length > 0) {
-            appLocalCollection = new AppCollection([...appLocalCollection.apps, ...appsToAdd]);
+            appLocalCollection = new AppCollection([...appLocalCollection.apps, ...appsToAdd], repoSlug);
             core.info(`force-apps: added ${appsToAdd.length} app(s). Total apps in scope: ${appLocalCollection.apps.length}.`);
         }
         else {
@@ -34670,7 +34764,8 @@ async function run() {
 async function postDiffComment(diffs, actionInput) {
     const octokit = github.getOctokit(actionInput.githubToken);
     const { owner, repo } = github.context.repo;
-    const sha = actionInput.headSha || github.context.payload.pull_request?.head?.sha;
+    // getActionInput already falls back to the PR head.
+    const sha = actionInput.headSha;
     const commitLink = sha
         ? `https://github.com/${owner}/${repo}/pull/${github.context.issue.number}/commits/${sha}`
         : `https://github.com/${owner}/${repo}/pull/${github.context.issue.number}`;
@@ -34711,9 +34806,12 @@ ${diff}
     const header = `${headerPrefix}
 ## ArgoCD Diff ${actionInput.argocd.fqdn} for commit [\`${shortCommitSha}\`](${commitLink})
 `;
+    const body = diffs.length
+        ? diffOutput.join('\n')
+        : '_No Application in this repo produced a diff for this PR._';
     const output = scrubSecrets(`${header}
 _Updated at ${new Date().toLocaleString('en-CA', { timeZone: 'Asia/Kolkata' })} IST_
-  ${diffOutput.join('\n')}
+  ${body}
 
 | Legend | Status |
 | :---:  | :---   |
@@ -34727,7 +34825,8 @@ _Updated at ${new Date().toLocaleString('en-CA', { timeZone: 'Asia/Kolkata' })} 
         repo
     });
     const existingComment = commentsResponse.data.find(d => d.body?.includes(headerPrefix) ?? false);
-    // Existing comments should be updated even if there are no changes this round in order to indicate that
+    // Comment unconditionally, the way the drift report does: a silent green check
+    // is indistinguishable from the action never having run.
     if (existingComment) {
         octokit.rest.issues.updateComment({
             owner,
@@ -34735,9 +34834,8 @@ _Updated at ${new Date().toLocaleString('en-CA', { timeZone: 'Asia/Kolkata' })} 
             comment_id: existingComment.id,
             body: output
         });
-        // Only post a new comment when there are changes
     }
-    else if (diffs.length) {
+    else {
         octokit.rest.issues.createComment({
             issue_number: github.context.issue.number,
             owner,

@@ -6,7 +6,8 @@ on:
       - '.github/workflows/checks.yml'
       - '__tests__/**'
       - 'src/**'
-      - 'jest.config.js'
+      - 'dist/**'
+      - 'jest.config.ts'
       - 'package-lock.json'
 
 jobs:
@@ -31,6 +32,20 @@ jobs:
       - name: Install NPM Dev Dependencies
         run: |
           npm ci
-      
+
+      - name: Lint
+        run: npm run lint
+
+      # dist/ is committed and is what `uses:` actually runs, so a stale bundle
+      # ships the old behaviour however green src/ is.
+      - name: Verify dist is rebuilt from src
+        run: |
+          npm run build
+          if ! git diff --quiet -- dist/; then
+            echo "ERROR: dist/ is stale — run 'npm run build' and commit the result"
+            git diff --stat -- dist/
+            exit 1
+          fi
+
       - name: Run Tests and Check Coverage
         uses: ArtiomTr/jest-coverage-report-action@v2

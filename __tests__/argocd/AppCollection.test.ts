@@ -4,8 +4,9 @@ import { type App } from '../../src/argocd/App.js';
 import { AppCollection } from '../../src/argocd/AppCollection.js';
 
 test('filterByRepo removes apps from other repos', () => {
+  // filterByRepo also records the repo, so later path/revision filters scope to it.
   expect(appCollection().filterByRepo('argocd-diff-action/app-one')).toStrictEqual(
-    new AppCollection([appOne()])
+    new AppCollection([appOne()], 'argocd-diff-action/app-one')
   );
 });
 
