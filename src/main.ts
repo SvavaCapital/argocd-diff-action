@@ -50,7 +50,7 @@ async function run(): Promise<void> {
     } else if (actionInput.forceApps.length > 0) {
       // Non-PR event (e.g. issue_comment) with explicit force-apps — scope to force-apps only.
       core.info('Non-PR event with force-apps set: scoping diff to force-apps only.');
-      appLocalCollection = new AppCollection([]);
+      appLocalCollection = new AppCollection([], repoSlug);
     } else {
       core.warning(
         'Input `only-changed-apps` was enabled but this is not a pull_request event; running diffs for all repo apps.'
@@ -67,7 +67,10 @@ async function run(): Promise<void> {
       .map(name => appAllCollection.getAppByName(name))
       .filter((app): app is NonNullable<typeof app> => app !== undefined);
     if (appsToAdd.length > 0) {
-      appLocalCollection = new AppCollection([...appLocalCollection.apps, ...appsToAdd]);
+      appLocalCollection = new AppCollection(
+        [...appLocalCollection.apps, ...appsToAdd],
+        repoSlug
+      );
       core.info(`force-apps: added ${appsToAdd.length} app(s). Total apps in scope: ${appLocalCollection.apps.length}.`);
     } else {
       core.info('force-apps: all specified apps are already in scope or not found in ArgoCD.');

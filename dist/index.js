@@ -34299,6 +34299,17 @@ function appSources(app) {
     }
     return app.spec.source ? [app.spec.source] : [];
 }
+// Sources belonging to `repoMatch`. Path- and revision-based filtering must use
+// this rather than appSources(): a source from another repo can carry path '.'
+// or track main, which would put the Application in scope on changes that touch
+// nothing it renders from this repo. An empty repoMatch keeps every source.
+function sourcesForRepo(app, repoMatch) {
+    const sources = appSources(app);
+    if (!repoMatch) {
+        return sources;
+    }
+    return sources.filter(source => source.repoURL?.includes(repoMatch));
+}
 function isMultiSource(app) {
     return (app.spec.sources?.length ?? 0) > 0;
 }
@@ -34317,23 +34328,29 @@ function sourcePositionForRepo(app, repoMatch) {
 
 class AppCollection {
     apps;
-    constructor(apps) {
+    // "owner/repo" the diff is being generated for. Path- and revision-based
+    // filters consider only sources from this repo; see sourcesForRepo. Empty
+    // means "unknown repo", which falls back to considering every source.
+    repoMatch;
+    constructor(apps, repoMatch = '') {
         this.apps = apps;
+        this.repoMatch = repoMatch;
     }
-    // Filters apps to those where at least one source path overlaps a changed
-    // file path. Multi-source apps match on any of their sources, so a change to
-    // one source's path is enough to put the whole Application in scope.
+    // Filters apps to those where at least one source path in this repo overlaps
+    // a changed file path. Multi-source apps match on any of their sources in
+    // this repo, so a change under one such source's path is enough to put the
+    // whole Application in scope.
     filterByChangedFiles(changedFiles) {
         if (this.apps.length === 0) {
             return this;
         }
         if (changedFiles.length === 0) {
-            return new AppCollection([]);
+            return new AppCollection([], this.repoMatch);
         }
         const normalizedChangedFiles = changedFiles
             .filter(Boolean)
             .map(f => f.replace(/^\.\//, ''));
-        return new AppCollection(this.apps.filter(app => appSources(app).some(source => {
+        return new AppCollection(this.apps.filter(app => sourcesForRepo(app, this.repoMatch).some(source => {
             const appPathRaw = source.path;
             if (!appPathRaw) {
                 return false;
@@ -34346,12 +34363,12 @@ class AppCollection {
                 const p = changedPath.replace(/\/+$/, '');
                 return p === appPath || p.startsWith(`${appPath}/`);
             });
-        })));
+        })), this.repoMatch);
     }
-    // Keeps apps that still have at least one path-bearing source outside the
-    // excluded set. An app is only dropped when every one of its paths is
-    // excluded — excluding one source of a multi-source app must not silently
-    // drop the diff for its other sources.
+    // Keeps apps that still have at least one path-bearing source in this repo
+    // outside the excluded set. An app is only dropped when every one of its
+    // paths here is excluded — excluding one source of a multi-source app must
+    // not silently drop the diff for its other sources in this repo.
     filterByExcludedPath(excludedPaths) {
         if (this.apps.length === 0) {
             return this;
@@ -34359,19 +34376,23 @@ class AppCollection {
         if (excludedPaths.length === 0) {
             return this;
         }
-        return new AppCollection(this.apps.filter(app => appSources(app).some(source => source.path !== undefined && !excludedPaths.includes(source.path))));
+        return new AppCollection(this.apps.filter(app => sourcesForRepo(app, this.repoMatch).some(source => source.path !== undefined && !excludedPaths.includes(source.path))), this.repoMatch);
     }
     filterByRepo(repoMatch) {
         if (this.apps.length === 0) {
             return this;
         }
-        return new AppCollection(this.apps.filter(app => appSources(app).some(source => source.repoURL !== undefined && source.repoURL.includes(repoMatch))));
+        return new AppCollection(this.apps.filter(app => appSources(app).some(source => source.repoURL !== undefined && source.repoURL.includes(repoMatch))), 
+        // Membership is decided here, so this is where an unknown repoMatch is learnt.
+        this.repoMatch || repoMatch);
     }
+    // Only this repo's sources are considered: the PR compares against this
+    // repo's trunk, and another source tracking main says nothing about that.
     filterByTargetRevision(targetRevisions = ['master', 'main', 'HEAD']) {
         if (this.apps.length === 0) {
             return this;
         }
-        return new AppCollection(this.apps.filter(app => appSources(app).some(source => source.targetRevision !== undefined && targetRevisions.includes(source.targetRevision))));
+        return new AppCollection(this.apps.filter(app => sourcesForRepo(app, this.repoMatch).some(source => source.targetRevision !== undefined && targetRevisions.includes(source.targetRevision))), this.repoMatch);
     }
     getAppByName(name) {
         if (this.apps.length === 0) {
@@ -34541,7 +34562,7 @@ class ArgoCDServer {
     }
     async getAppCollection() {
         let responseJson = await this.api('v1/applications');
-        return new AppCollection(responseJson.items);
+        return new AppCollection(responseJson.items, this.repoMatch);
     }
     async getServerVersion() {
         let responseJson = await this.api('version');
@@ -34708,7 +34729,7 @@ async function run() {
         else if (actionInput.forceApps.length > 0) {
             // Non-PR event (e.g. issue_comment) with explicit force-apps — scope to force-apps only.
             core.info('Non-PR event with force-apps set: scoping diff to force-apps only.');
-            appLocalCollection = new AppCollection([]);
+            appLocalCollection = new AppCollection([], repoSlug);
         }
         else {
             core.warning('Input `only-changed-apps` was enabled but this is not a pull_request event; running diffs for all repo apps.');
@@ -34723,7 +34744,7 @@ async function run() {
             .map(name => appAllCollection.getAppByName(name))
             .filter((app) => app !== undefined);
         if (appsToAdd.length > 0) {
-            appLocalCollection = new AppCollection([...appLocalCollection.apps, ...appsToAdd]);
+            appLocalCollection = new AppCollection([...appLocalCollection.apps, ...appsToAdd], repoSlug);
             core.info(`force-apps: added ${appsToAdd.length} app(s). Total apps in scope: ${appLocalCollection.apps.length}.`);
         }
         else {

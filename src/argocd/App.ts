@@ -37,6 +37,18 @@ export function appSources(app: App): AppSource[] {
   return app.spec.source ? [app.spec.source] : [];
 }
 
+// Sources belonging to `repoMatch`. Path- and revision-based filtering must use
+// this rather than appSources(): a source from another repo can carry path '.'
+// or track main, which would put the Application in scope on changes that touch
+// nothing it renders from this repo. An empty repoMatch keeps every source.
+export function sourcesForRepo(app: App, repoMatch: string): AppSource[] {
+  const sources = appSources(app);
+  if (!repoMatch) {
+    return sources;
+  }
+  return sources.filter(source => source.repoURL?.includes(repoMatch));
+}
+
 export function isMultiSource(app: App): boolean {
   return (app.spec.sources?.length ?? 0) > 0;
 }

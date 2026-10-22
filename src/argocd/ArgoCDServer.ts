@@ -152,7 +152,7 @@ export class ArgoCDServer {
 
   async getAppCollection(): Promise<AppCollection> {
     let responseJson = await this.api('v1/applications');
-    return new AppCollection(responseJson.items);
+    return new AppCollection(responseJson.items, this.repoMatch);
   }
 
   async getServerVersion(): Promise<string> {

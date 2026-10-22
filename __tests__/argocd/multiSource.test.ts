@@ -104,6 +104,41 @@ describe('AppCollection with multi-source apps', () => {
   });
 });
 
+// A source belonging to another repo must never decide scope for this one.
+// Without repo-scoping, the scaffold source's path '.' matches every changed
+// file and the svcrepo source's targetRevision 'main' satisfies the trunk
+// check, putting every multi-source app in scope for any change.
+describe('AppCollection scopes path and revision filters to this repo', () => {
+  const scoped = () => new AppCollection([multiSourceApp()], REPO);
+
+  test('a change matching only another repo source path is out of scope', () => {
+    // 'charts/alfred' is the svcrepo source's path, not a path in this repo.
+    expect(scoped().filterByChangedFiles(['charts/alfred/values.yaml']).apps).toStrictEqual([]);
+    // Sanity: the same app still matches a change under its own source path.
+    expect(scoped().filterByChangedFiles(['syfe/alfred/service.yaml']).apps).toStrictEqual([
+      multiSourceApp()
+    ]);
+  });
+
+  test('trunk check ignores another repo source tracking main', () => {
+    expect(scoped().filterByTargetRevision(['main']).apps).toStrictEqual([]);
+    // This repo's source tracks HEAD, so the default revision list still matches.
+    expect(scoped().filterByTargetRevision().apps).toStrictEqual([multiSourceApp()]);
+  });
+
+  test('excluding this repo source drops the app despite other repo paths', () => {
+    expect(scoped().filterByExcludedPath(['syfe/alfred']).apps).toStrictEqual([]);
+  });
+
+  test('filterByRepo learns the repo so later filters are scoped', () => {
+    expect(
+      new AppCollection([multiSourceApp()])
+        .filterByRepo(REPO)
+        .filterByExcludedPath(['syfe/alfred']).apps
+    ).toStrictEqual([]);
+  });
+});
+
 describe('ArgoCDServer multi-source diff', () => {
   beforeEach(() => {
     mockedExecCommand.mockReset();
