@@ -34621,6 +34621,38 @@ async function getPullRequestChangedFiles(actionInput) {
     return changed;
 }
 
+;// CONCATENATED MODULE: ./src/comment.ts
+const MAX_COMMENT_CHARS = 60_000;
+const MAX_SUMMARY_CHARS = 1_000_000;
+/**
+ * Keeps as many whole app sections as fit in `budget` characters, in order.
+ * Sections that don't fit are replaced by a one-line pointer to the full output.
+ */
+function fitSections(sections, budget, fullOutputUrl) {
+    const omittedLine = (s) => `\nApp: \`${s.appName}\`: diff omitted from this comment, see the [job summary](${fullOutputUrl}).\n`;
+    const omittedTotal = sections.reduce((n, s) => n + omittedLine(s).length, 0);
+    let remaining = budget - omittedTotal;
+    const out = [];
+    for (const s of sections) {
+        const extra = s.body.length - omittedLine(s).length;
+        if (extra <= remaining) {
+            out.push(s.body);
+            remaining -= extra;
+        }
+        else {
+            out.push(omittedLine(s));
+        }
+    }
+    return out;
+}
+function truncateForSummary(text, max = MAX_SUMMARY_CHARS) {
+    if (text.length <= max) {
+        return text;
+    }
+    const note = '\n\n_Output truncated: larger than the job summary limit._\n';
+    return text.slice(0, max - note.length) + note;
+}
+
 ;// CONCATENATED MODULE: ./src/getActionInput.ts
 
 function parsePathAliases(raw) {
@@ -34671,6 +34703,7 @@ function getActionInput() {
 }
 
 ;// CONCATENATED MODULE: ./src/main.ts
+
 
 
 
@@ -34787,9 +34820,10 @@ ${diff}
     const header = `${headerPrefix}
 ## ArgoCD Diff ${actionInput.argocd.fqdn} for commit [\`${shortCommitSha}\`](${commitLink})
 `;
-    const output = scrubSecrets(`${header}
+    const render = (sections, note = '') => scrubSecrets(`${header}
 _Updated at ${new Date().toLocaleString('en-CA', { timeZone: 'Asia/Kolkata' })} IST_
-  ${diffOutput.join('\n')}
+${note}
+  ${sections.join('\n')}
 
 | Legend | Status |
 | :---:  | :---   |
@@ -34797,6 +34831,22 @@ _Updated at ${new Date().toLocaleString('en-CA', { timeZone: 'Asia/Kolkata' })} 
 | ⚠️      | The app is out-of-sync in ArgoCD, and the diffs you see include those changes plus any from this PR. |
 | 🛑     | There was an error generating the ArgoCD diffs due to changes in this PR. |
 `);
+    const fullOutput = render(diffOutput);
+    const runUrl = `${github.context.serverUrl}/${owner}/${repo}/actions/runs/${github.context.runId}`;
+    try {
+        await core.summary.addRaw(truncateForSummary(fullOutput)).write();
+    }
+    catch (e) {
+        core.warning(`Could not write the job summary: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    let output = fullOutput;
+    if (fullOutput.length > MAX_COMMENT_CHARS) {
+        const note = `\n> Full diff for ${diffs.length} app(s) is ${fullOutput.length} characters, over GitHub's comment limit. Apps that don't fit are listed without their diff; see the [job summary](${runUrl}).\n`;
+        const overhead = render([], note).length;
+        const sections = diffs.map((d, i) => ({ appName: d.app.metadata.name, body: diffOutput[i] ?? '' }));
+        output = render(fitSections(sections, MAX_COMMENT_CHARS - overhead, runUrl), note);
+        core.info(`Diff comment trimmed from ${fullOutput.length} to ${output.length} characters.`);
+    }
     const commentsResponse = await octokit.rest.issues.listComments({
         issue_number: github.context.issue.number,
         owner,
@@ -34805,7 +34855,7 @@ _Updated at ${new Date().toLocaleString('en-CA', { timeZone: 'Asia/Kolkata' })} 
     const existingComment = commentsResponse.data.find(d => d.body?.includes(headerPrefix) ?? false);
     // Existing comments should be updated even if there are no changes this round in order to indicate that
     if (existingComment) {
-        octokit.rest.issues.updateComment({
+        await octokit.rest.issues.updateComment({
             owner,
             repo,
             comment_id: existingComment.id,
@@ -34814,7 +34864,7 @@ _Updated at ${new Date().toLocaleString('en-CA', { timeZone: 'Asia/Kolkata' })} 
         // Only post a new comment when there are changes
     }
     else if (diffs.length) {
-        octokit.rest.issues.createComment({
+        await octokit.rest.issues.createComment({
             issue_number: github.context.issue.number,
             owner,
             repo,
