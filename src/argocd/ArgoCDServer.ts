@@ -11,6 +11,14 @@ import { ActionInput } from '../getActionInput.js';
 
 type Task<T> = () => Promise<T>;
 
+const TRANSIENT_GATEWAY_ERROR = /status code 50[234]\b/;
+
+export function isTransientGatewayError(res: ExecResult): boolean {
+  return TRANSIENT_GATEWAY_ERROR.test(`${res.err?.message ?? ''}\n${res.stderr ?? ''}`);
+}
+
+const sleep = async (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
+
 /**
  * Runs task factories with at most `concurrency` in flight (0 = all at once).
  * Results keep the input order and have the shape of Promise.allSettled.
@@ -50,6 +58,8 @@ export class ArgoCDServer {
   token: string;
   maxConcurrency: number;
   diffTimeoutMs: number;
+  diffRetries: number;
+  retryBaseDelayMs = 10_000;
 
   constructor(actionInput: ActionInput) {
     this.uri = actionInput.argocd.uri;
@@ -58,6 +68,7 @@ export class ArgoCDServer {
     this.extraCommandArgs = actionInput.argocd.extraCliArgs;
     this.maxConcurrency = actionInput.maxConcurrency;
     this.diffTimeoutMs = actionInput.diffTimeoutSeconds * 1000;
+    this.diffRetries = actionInput.diffRetries;
   }
 
   async installArgoCDCommand(version: string, arch = 'linux'): Promise<void> {
@@ -93,19 +104,27 @@ export class ArgoCDServer {
   }
 
   async getAppDiff(app: App, params: string[] = []): Promise<Diff> {
-    let res: ExecResult;
-    try {
-      res = await this.command(
-        `app diff --local-repo-root=${process.cwd()} ${app.metadata.name} ${params.join(' ')} --exit-code=false`
-      );
-      core.debug(`stdout: ${res.stdout}`);
-      core.debug(`stderr: ${res.stderr}`);
-      return { app, diff: res.stdout } as Diff;
-    } catch (e) {
-      res = e as ExecResult;
-      core.error('Unexpected error when fetching app diff:');
-      core.error(`${res.err}`);
-      return { app, diff: '', error: res } as Diff;
+    const cmd = `app diff --local-repo-root=${process.cwd()} ${app.metadata.name} ${params.join(' ')} --exit-code=false`;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const res = await this.command(cmd);
+        core.debug(`stdout: ${res.stdout}`);
+        core.debug(`stderr: ${res.stderr}`);
+        return { app, diff: res.stdout } as Diff;
+      } catch (e) {
+        const res = e as ExecResult;
+        if (attempt < this.diffRetries && isTransientGatewayError(res)) {
+          const waitMs = this.retryBaseDelayMs * (attempt + 1);
+          core.warning(
+            `Transient gateway error diffing '${app.metadata.name}' (attempt ${attempt + 1}/${this.diffRetries + 1}); retrying in ${waitMs / 1000}s.`
+          );
+          await sleep(waitMs);
+          continue;
+        }
+        core.error('Unexpected error when fetching app diff:');
+        core.error(`${res.err}`);
+        return { app, diff: '', error: res } as Diff;
+      }
     }
   }
 

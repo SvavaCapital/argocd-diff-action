@@ -9,6 +9,7 @@ export interface ActionInput {
   pathAliases: [string, string][];
   maxConcurrency: number;
   diffTimeoutSeconds: number;
+  diffRetries: number;
   forceApps: string[];
   argocd: {
     excludePaths: string[];
@@ -59,6 +60,7 @@ export default function getActionInput(): ActionInput {
     pathAliases: parsePathAliases(core.getInput('path-aliases')),
     maxConcurrency: nonNegativeInt(core.getInput('max-concurrency'), 5),
     diffTimeoutSeconds: nonNegativeInt(core.getInput('diff-timeout-seconds'), 90),
+    diffRetries: nonNegativeInt(core.getInput('diff-retries'), 2),
     forceApps,
     argocd: {
       excludePaths: core.getInput('argocd-exclude-paths').split(','),
