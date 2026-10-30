@@ -34304,7 +34304,9 @@ class AppCollection {
     // With matchEnvInPath, a file under `<path>/values/<env>/` or `<path>/cluster-config/<env>/`
     // only selects apps whose plugin env `ENV` is <env>; `base` and `common` select every app,
     // and apps without an `ENV` are always kept.
-    filterByChangedFiles(changedFiles, matchEnvInPath = false) {
+    // pathAliases maps an app path prefix to extra prefixes whose files also belong to the app
+    // (e.g. ['argocd-nonprod/', ''] makes argocd-nonprod/charts/x also match charts/x/...).
+    filterByChangedFiles(changedFiles, matchEnvInPath = false, pathAliases = []) {
         if (this.apps.length === 0) {
             return this;
         }
@@ -34324,15 +34326,22 @@ class AppCollection {
                 return true;
             }
             const appEnv = app.spec.source?.plugin?.env?.find(e => e.name === 'ENV')?.value;
+            const candidatePaths = [appPath];
+            for (const [from, to] of pathAliases) {
+                if (from !== '' && appPath.startsWith(from)) {
+                    candidatePaths.push(`${to}${appPath.slice(from.length)}`);
+                }
+            }
             return normalizedChangedFiles.some(changedPath => {
                 const p = changedPath.replace(/\/+$/, '');
-                if (p !== appPath && !p.startsWith(`${appPath}/`)) {
+                const base = candidatePaths.find(c => p === c || p.startsWith(`${c}/`));
+                if (base === undefined) {
                     return false;
                 }
                 if (!matchEnvInPath || appEnv === undefined || appEnv === '') {
                     return true;
                 }
-                const fileEnv = envFromPath(p.slice(appPath.length + 1));
+                const fileEnv = envFromPath(p.slice(base.length + 1));
                 return fileEnv === undefined || SHARED_ENV_DIRS.includes(fileEnv) || fileEnv === appEnv;
             });
         }));
@@ -34614,6 +34623,17 @@ async function getPullRequestChangedFiles(actionInput) {
 
 ;// CONCATENATED MODULE: ./src/getActionInput.ts
 
+function parsePathAliases(raw) {
+    return raw
+        .split(',')
+        .map(s => s.trim())
+        .filter(s => s.includes('='))
+        .map(s => {
+        const i = s.indexOf('=');
+        return [s.slice(0, i).trim(), s.slice(i + 1).trim()];
+    })
+        .filter(([from]) => from !== '');
+}
 function nonNegativeInt(raw, fallback) {
     const value = Number(raw.trim());
     return raw.trim() !== '' && Number.isInteger(value) && value >= 0 ? value : fallback;
@@ -34633,6 +34653,7 @@ function getActionInput() {
         headSha: core.getInput('head-sha').trim(),
         onlyChangedApps: core.getInput('only-changed-apps') === 'true',
         matchEnvInPath: core.getInput('match-env-in-path') === 'true',
+        pathAliases: parsePathAliases(core.getInput('path-aliases')),
         maxConcurrency: nonNegativeInt(core.getInput('max-concurrency'), 5),
         diffTimeoutSeconds: nonNegativeInt(core.getInput('diff-timeout-seconds'), 90),
         forceApps,
@@ -34683,7 +34704,7 @@ async function run() {
         const changedFiles = await getPullRequestChangedFiles(actionInput);
         if (changedFiles) {
             const beforeCount = appLocalCollection.apps.length;
-            appLocalCollection = appLocalCollection.filterByChangedFiles(changedFiles, actionInput.matchEnvInPath);
+            appLocalCollection = appLocalCollection.filterByChangedFiles(changedFiles, actionInput.matchEnvInPath, actionInput.pathAliases);
             core.info(`PR changed-files filtering enabled. Changed files: ${changedFiles.length}. Apps in scope: ${appLocalCollection.apps.length}/${beforeCount}.`);
             core.debug(`Changed files: ${changedFiles.join(', ')}`);
         }

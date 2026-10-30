@@ -18,7 +18,13 @@ export class AppCollection {
   // With matchEnvInPath, a file under `<path>/values/<env>/` or `<path>/cluster-config/<env>/`
   // only selects apps whose plugin env `ENV` is <env>; `base` and `common` select every app,
   // and apps without an `ENV` are always kept.
-  filterByChangedFiles(changedFiles: string[], matchEnvInPath = false): AppCollection {
+  // pathAliases maps an app path prefix to extra prefixes whose files also belong to the app
+  // (e.g. ['argocd-nonprod/', ''] makes argocd-nonprod/charts/x also match charts/x/...).
+  filterByChangedFiles(
+    changedFiles: string[],
+    matchEnvInPath = false,
+    pathAliases: [string, string][] = []
+  ): AppCollection {
     if (this.apps.length === 0) {
       return this;
     }
@@ -45,16 +51,23 @@ export class AppCollection {
         }
 
         const appEnv = app.spec.source?.plugin?.env?.find(e => e.name === 'ENV')?.value;
+        const candidatePaths = [appPath];
+        for (const [from, to] of pathAliases) {
+          if (from !== '' && appPath.startsWith(from)) {
+            candidatePaths.push(`${to}${appPath.slice(from.length)}`);
+          }
+        }
 
         return normalizedChangedFiles.some(changedPath => {
           const p = changedPath.replace(/\/+$/, '');
-          if (p !== appPath && !p.startsWith(`${appPath}/`)) {
+          const base = candidatePaths.find(c => p === c || p.startsWith(`${c}/`));
+          if (base === undefined) {
             return false;
           }
           if (!matchEnvInPath || appEnv === undefined || appEnv === '') {
             return true;
           }
-          const fileEnv = envFromPath(p.slice(appPath.length + 1));
+          const fileEnv = envFromPath(p.slice(base.length + 1));
           return fileEnv === undefined || SHARED_ENV_DIRS.includes(fileEnv) || fileEnv === appEnv;
         });
       })

@@ -69,6 +69,45 @@ describe('filterByChangedFiles with matchEnvInPath', () => {
   });
 });
 
+describe('filterByChangedFiles with pathAliases (nonprod-argo layout)', () => {
+  const blue = runnerApp('analytics-blue', 'nonprod-singapore', './argocd-nonprod/charts/actions-runner-scale-set');
+  const blueKong = runnerApp('kong-blue', 'nonprod-singapore', './argocd-nonprod/charts/kong-3.9');
+  const apps = (): AppCollection => new AppCollection([blue, blueKong]);
+  const aliases: [string, string][] = [['argocd-nonprod/', '']];
+
+  test('a values file under charts/<chart>/values/<env>/ selects the aliased app for that env', () => {
+    const changed = ['charts/actions-runner-scale-set/values/nonprod-singapore/analytics-blue-values.yaml.gotmpl'];
+    expect(names(apps().filterByChangedFiles(changed, true, aliases))).toStrictEqual(['analytics-blue']);
+  });
+
+  test('another env under the aliased path does not select it', () => {
+    const changed = ['charts/actions-runner-scale-set/values/saas-mumbai/analytics-values.yaml.gotmpl'];
+    expect(names(apps().filterByChangedFiles(changed, true, aliases))).toStrictEqual([]);
+  });
+
+  test('a cluster-config file under the real app path still selects it', () => {
+    const changed = ['argocd-nonprod/charts/kong-3.9/cluster-config/nonprod-singapore/blue/config-internal-nlb.json'];
+    expect(names(apps().filterByChangedFiles(changed, true, aliases))).toStrictEqual(['kong-blue']);
+  });
+
+  test('without aliases, files under charts/<chart> do not select argocd-nonprod apps', () => {
+    const changed = ['charts/kong-3.9/values/nonprod-singapore/values-internal-nlb.yaml.gotmpl'];
+    expect(names(apps().filterByChangedFiles(changed, true))).toStrictEqual([]);
+    expect(names(apps().filterByChangedFiles(changed, true, aliases))).toStrictEqual(['kong-blue']);
+  });
+});
+
+describe('parsePathAliases', () => {
+  test('parses from=to pairs and ignores junk', async () => {
+    const { parsePathAliases } = await import('../src/getActionInput.js');
+    expect(parsePathAliases('argocd-nonprod/=, a/=b/ ,bad,=x')).toStrictEqual([
+      ['argocd-nonprod/', ''],
+      ['a/', 'b/']
+    ]);
+    expect(parsePathAliases('')).toStrictEqual([]);
+  });
+});
+
 describe('runWithConcurrency', () => {
   const tracked = (limit: number) => {
     let inFlight = 0;

@@ -6,6 +6,7 @@ export interface ActionInput {
   headSha: string;
   onlyChangedApps?: boolean;
   matchEnvInPath: boolean;
+  pathAliases: [string, string][];
   maxConcurrency: number;
   diffTimeoutSeconds: number;
   forceApps: string[];
@@ -18,6 +19,18 @@ export interface ActionInput {
     uri: string;
     cliVersion: string;
   };
+}
+
+export function parsePathAliases(raw: string): [string, string][] {
+  return raw
+    .split(',')
+    .map(s => s.trim())
+    .filter(s => s.includes('='))
+    .map(s => {
+      const i = s.indexOf('=');
+      return [s.slice(0, i).trim(), s.slice(i + 1).trim()] as [string, string];
+    })
+    .filter(([from]) => from !== '');
 }
 
 function nonNegativeInt(raw: string, fallback: number): number {
@@ -43,6 +56,7 @@ export default function getActionInput(): ActionInput {
     headSha: core.getInput('head-sha').trim(),
     onlyChangedApps: core.getInput('only-changed-apps') === 'true',
     matchEnvInPath: core.getInput('match-env-in-path') === 'true',
+    pathAliases: parsePathAliases(core.getInput('path-aliases')),
     maxConcurrency: nonNegativeInt(core.getInput('max-concurrency'), 5),
     diffTimeoutSeconds: nonNegativeInt(core.getInput('diff-timeout-seconds'), 90),
     forceApps,

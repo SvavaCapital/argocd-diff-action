@@ -10,6 +10,10 @@ inputs:
     description: With only-changed-apps, a changed file under <path>/values/<env>/ or <path>/cluster-config/<env>/ only selects Applications whose plugin env ENV is <env> (base/common select all)
     default: 'false'
     required: false
+  path-aliases:
+    description: With only-changed-apps, comma-separated from=to prefix pairs; an app path starting with `from` also matches changed files under `to` + the rest of the path (e.g. `argocd-nonprod/=` makes argocd-nonprod/charts/x also match charts/x/...)
+    default: ''
+    required: false
   max-concurrency:
     description: Maximum number of app diffs run at the same time (0 = no limit)
     default: '5'

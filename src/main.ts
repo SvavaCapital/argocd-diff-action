@@ -40,7 +40,11 @@ async function run(): Promise<void> {
     const changedFiles = await getPullRequestChangedFiles(actionInput);
     if (changedFiles) {
       const beforeCount = appLocalCollection.apps.length;
-      appLocalCollection = appLocalCollection.filterByChangedFiles(changedFiles, actionInput.matchEnvInPath);
+      appLocalCollection = appLocalCollection.filterByChangedFiles(
+        changedFiles,
+        actionInput.matchEnvInPath,
+        actionInput.pathAliases
+      );
       core.info(
         `PR changed-files filtering enabled. Changed files: ${changedFiles.length}. Apps in scope: ${appLocalCollection.apps.length}/${beforeCount}.`
       );

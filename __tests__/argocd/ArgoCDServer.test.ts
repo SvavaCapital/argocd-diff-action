@@ -213,6 +213,7 @@ function argocdServer(): ArgoCDServer {
     headSha: '',
     forceApps: [],
     matchEnvInPath: false,
+    pathAliases: [],
     maxConcurrency: 5,
     diffTimeoutSeconds: 90,
     argocd: {
