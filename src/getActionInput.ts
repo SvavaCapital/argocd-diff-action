@@ -5,6 +5,9 @@ export interface ActionInput {
   githubToken: string;
   headSha: string;
   onlyChangedApps?: boolean;
+  matchEnvInPath: boolean;
+  maxConcurrency: number;
+  diffTimeoutSeconds: number;
   forceApps: string[];
   argocd: {
     excludePaths: string[];
@@ -15,6 +18,11 @@ export interface ActionInput {
     uri: string;
     cliVersion: string;
   };
+}
+
+function nonNegativeInt(raw: string, fallback: number): number {
+  const value = Number(raw.trim());
+  return raw.trim() !== '' && Number.isInteger(value) && value >= 0 ? value : fallback;
 }
 
 export default function getActionInput(): ActionInput {
@@ -34,6 +42,9 @@ export default function getActionInput(): ActionInput {
     arch: process.env.ARCH || 'linux',
     headSha: core.getInput('head-sha').trim(),
     onlyChangedApps: core.getInput('only-changed-apps') === 'true',
+    matchEnvInPath: core.getInput('match-env-in-path') === 'true',
+    maxConcurrency: nonNegativeInt(core.getInput('max-concurrency'), 5),
+    diffTimeoutSeconds: nonNegativeInt(core.getInput('diff-timeout-seconds'), 90),
     forceApps,
     argocd: {
       excludePaths: core.getInput('argocd-exclude-paths').split(','),

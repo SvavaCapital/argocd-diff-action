@@ -109,7 +109,9 @@ describe('ArgoCDServer tests', function () {
     expect(mockedExecCommand).toHaveBeenCalledWith(
       `bin/argo app diff --local-repo-root=${process.cwd()} ${appOne().metadata.name} --local=${
         appOne().spec.source?.path
-      } --exit-code=false --auth-token=fakeArgoCdToken --server=argocd.example `
+      } --exit-code=false --auth-token=fakeArgoCdToken --server=argocd.example `,
+      {},
+      90000
     );
   });
 
@@ -128,7 +130,9 @@ describe('ArgoCDServer tests', function () {
     expect(mockedExecCommand).toHaveBeenCalledWith(
       `bin/argo app diff --local-repo-root=${process.cwd()} ${
         appThree().metadata.name
-      } --revision=1.2.2 --exit-code=false --auth-token=fakeArgoCdToken --server=argocd.example `
+      } --revision=1.2.2 --exit-code=false --auth-token=fakeArgoCdToken --server=argocd.example `,
+      {},
+      90000
     );
   });
 });
@@ -208,6 +212,9 @@ function argocdServer(): ArgoCDServer {
     arch: 'linux',
     headSha: '',
     forceApps: [],
+    matchEnvInPath: false,
+    maxConcurrency: 5,
+    diffTimeoutSeconds: 90,
     argocd: {
       excludePaths: [],
       extraCliArgs: '',

@@ -34290,13 +34290,21 @@ var core = __nccwpck_require__(7484);
 // EXTERNAL MODULE: ./node_modules/@actions/github/lib/github.js
 var github = __nccwpck_require__(3228);
 ;// CONCATENATED MODULE: ./src/argocd/AppCollection.ts
+const SHARED_ENV_DIRS = ['base', 'common'];
+function envFromPath(relativePath) {
+    const match = /(?:^|\/)(?:values|cluster-config)\/([^/]+)\//.exec(relativePath);
+    return match?.[1];
+}
 class AppCollection {
     apps;
     constructor(apps) {
         this.apps = apps;
     }
-    // Filters apps to those whose `spec.source.path` overlaps at least one changed file path 
-    filterByChangedFiles(changedFiles) {
+    // Filters apps to those whose `spec.source.path` overlaps at least one changed file path.
+    // With matchEnvInPath, a file under `<path>/values/<env>/` or `<path>/cluster-config/<env>/`
+    // only selects apps whose plugin env `ENV` is <env>; `base` and `common` select every app,
+    // and apps without an `ENV` are always kept.
+    filterByChangedFiles(changedFiles, matchEnvInPath = false) {
         if (this.apps.length === 0) {
             return this;
         }
@@ -34315,9 +34323,17 @@ class AppCollection {
             if (appPath === '.' || appPath === '') {
                 return true;
             }
+            const appEnv = app.spec.source?.plugin?.env?.find(e => e.name === 'ENV')?.value;
             return normalizedChangedFiles.some(changedPath => {
                 const p = changedPath.replace(/\/+$/, '');
-                return p === appPath || p.startsWith(`${appPath}/`);
+                if (p !== appPath && !p.startsWith(`${appPath}/`)) {
+                    return false;
+                }
+                if (!matchEnvInPath || appEnv === undefined || appEnv === '') {
+                    return true;
+                }
+                const fileEnv = envFromPath(p.slice(appPath.length + 1));
+                return fileEnv === undefined || SHARED_ENV_DIRS.includes(fileEnv) || fileEnv === appEnv;
             });
         }));
     }
@@ -34367,9 +34383,10 @@ var external_child_process_ = __nccwpck_require__(5317);
 ;// CONCATENATED MODULE: ./src/lib.ts
 // lib.ts - utility functions
 
-async function execCommand(command, options = {}) {
+async function execCommand(command, options = {}, timeoutMs = 0) {
     return new Promise(async (done, failed) => {
-        (0,external_child_process_.exec)(command, options, (err, stdout, stderr) => {
+        const execOptions = { timeout: timeoutMs, ...options };
+        (0,external_child_process_.exec)(command, execOptions, (err, stdout, stderr) => {
             const res = {
                 stdout,
                 stderr
@@ -34400,17 +34417,47 @@ function scrubSecrets(input) {
 
 
 
+/**
+ * Runs task factories with at most `concurrency` in flight (0 = all at once).
+ * Results keep the input order and have the shape of Promise.allSettled.
+ */
+async function runWithConcurrency(tasks, concurrency) {
+    const results = new Array(tasks.length);
+    const limit = concurrency > 0 ? Math.min(concurrency, tasks.length) : tasks.length;
+    let nextIndex = 0;
+    const worker = async () => {
+        while (nextIndex < tasks.length) {
+            const index = nextIndex++;
+            const task = tasks[index];
+            if (task === undefined) {
+                continue;
+            }
+            try {
+                results[index] = { status: 'fulfilled', value: await task() };
+            }
+            catch (reason) {
+                results[index] = { status: 'rejected', reason };
+            }
+        }
+    };
+    await Promise.all(Array.from({ length: limit }, async () => worker()));
+    return results;
+}
 class ArgoCDServer {
     binaryPath = 'bin/argo';
     extraCommandArgs;
     uri;
     fqdn;
     token;
+    maxConcurrency;
+    diffTimeoutMs;
     constructor(actionInput) {
         this.uri = actionInput.argocd.uri;
         this.fqdn = actionInput.argocd.fqdn;
         this.token = actionInput.argocd.token;
         this.extraCommandArgs = actionInput.argocd.extraCliArgs;
+        this.maxConcurrency = actionInput.maxConcurrency;
+        this.diffTimeoutMs = actionInput.diffTimeoutSeconds * 1000;
     }
     async installArgoCDCommand(version, arch = 'linux') {
         if (version == '') {
@@ -34422,7 +34469,7 @@ class ArgoCDServer {
     async command(params) {
         let cmd = `${this.binaryPath} ${params} --auth-token=${this.token} --server=${this.fqdn} ${this.extraCommandArgs}`;
         core.debug(`Running: ${scrubSecrets(cmd)}`);
-        return execCommand(cmd);
+        return execCommand(cmd, {}, this.diffTimeoutMs);
     }
     async getAppLocalDiff(app) {
         if (app.spec.source?.path === undefined) {
@@ -34487,30 +34534,31 @@ class ArgoCDServer {
         return responseJson.Version.split('+')[0];
     }
     async getAppCollectionLocalDiffs(appCollection) {
-        let appCollectionDiffPromises = [];
+        const tasks = [];
         appCollection.apps.forEach(app => {
             if (app.spec.source?.path !== undefined) {
-                appCollectionDiffPromises.push(this.getAppLocalDiff(app));
+                tasks.push(async () => this.getAppLocalDiff(app));
             }
         });
-        return this.getAppCollectionDiffs(appCollectionDiffPromises);
+        core.info(`Diffing ${tasks.length} apps, concurrency=${this.maxConcurrency || 'unbounded'}, timeout=${this.diffTimeoutMs / 1000}s per diff`);
+        return this.getAppCollectionDiffs(tasks);
     }
     async getAppCollectionRevisionDiffs(appCollection, appTargetRevisions) {
-        let appCollectionDiffPromises = [];
+        const tasks = [];
         appTargetRevisions.forEach(appTargetRevision => {
-            let app = appCollection.getAppByName(appTargetRevision.appName);
+            const app = appCollection.getAppByName(appTargetRevision.appName);
             if (app) {
-                appCollectionDiffPromises.push(this.getAppRevisionDiff(app, appTargetRevision.targetRevision));
+                tasks.push(async () => this.getAppRevisionDiff(app, appTargetRevision.targetRevision));
             }
             else {
                 core.warning(`Could not find Application '${appTargetRevision.appName}' in AppCollection for revision diffs.`);
             }
         });
-        return this.getAppCollectionDiffs(appCollectionDiffPromises);
+        return this.getAppCollectionDiffs(tasks);
     }
-    async getAppCollectionDiffs(appCollectionDiffPromises) {
+    async getAppCollectionDiffs(tasks) {
         const diffs = [];
-        let results = (await Promise.allSettled(appCollectionDiffPromises)).filter(result => result.status === 'fulfilled');
+        const results = (await runWithConcurrency(tasks, this.maxConcurrency)).filter(result => result.status === 'fulfilled');
         results.forEach(result => {
             let appDiff = result.value;
             if (appDiff.error) {
@@ -34566,6 +34614,10 @@ async function getPullRequestChangedFiles(actionInput) {
 
 ;// CONCATENATED MODULE: ./src/getActionInput.ts
 
+function nonNegativeInt(raw, fallback) {
+    const value = Number(raw.trim());
+    return raw.trim() !== '' && Number.isInteger(value) && value >= 0 ? value : fallback;
+}
 function getActionInput() {
     const useTls = core.getInput('argocd-server-tls') === 'true';
     const fqdn = core.getInput('argocd-server-fqdn');
@@ -34580,6 +34632,9 @@ function getActionInput() {
         arch: process.env.ARCH || 'linux',
         headSha: core.getInput('head-sha').trim(),
         onlyChangedApps: core.getInput('only-changed-apps') === 'true',
+        matchEnvInPath: core.getInput('match-env-in-path') === 'true',
+        maxConcurrency: nonNegativeInt(core.getInput('max-concurrency'), 5),
+        diffTimeoutSeconds: nonNegativeInt(core.getInput('diff-timeout-seconds'), 90),
         forceApps,
         argocd: {
             excludePaths: core.getInput('argocd-exclude-paths').split(','),
@@ -34628,7 +34683,7 @@ async function run() {
         const changedFiles = await getPullRequestChangedFiles(actionInput);
         if (changedFiles) {
             const beforeCount = appLocalCollection.apps.length;
-            appLocalCollection = appLocalCollection.filterByChangedFiles(changedFiles);
+            appLocalCollection = appLocalCollection.filterByChangedFiles(changedFiles, actionInput.matchEnvInPath);
             core.info(`PR changed-files filtering enabled. Changed files: ${changedFiles.length}. Apps in scope: ${appLocalCollection.apps.length}/${beforeCount}.`);
             core.debug(`Changed files: ${changedFiles.join(', ')}`);
         }

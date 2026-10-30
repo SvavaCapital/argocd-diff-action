@@ -84,6 +84,9 @@ function fakeActionInput(): ActionInput {
     headSha: '',
     githubToken: 'fake',
     onlyChangedApps: true,
+    matchEnvInPath: false,
+    maxConcurrency: 5,
+    diffTimeoutSeconds: 90,
     forceApps: [],
     argocd: {
       excludePaths: [],
