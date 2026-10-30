@@ -34426,6 +34426,11 @@ function scrubSecrets(input) {
 
 
 
+const TRANSIENT_GATEWAY_ERROR = /status code 50[234]\b/;
+function isTransientGatewayError(res) {
+    return TRANSIENT_GATEWAY_ERROR.test(`${res.err?.message ?? ''}\n${res.stderr ?? ''}`);
+}
+const sleep = async (ms) => new Promise(resolve => setTimeout(resolve, ms));
 /**
  * Runs task factories with at most `concurrency` in flight (0 = all at once).
  * Results keep the input order and have the shape of Promise.allSettled.
@@ -34460,6 +34465,8 @@ class ArgoCDServer {
     token;
     maxConcurrency;
     diffTimeoutMs;
+    diffRetries;
+    retryBaseDelayMs = 10_000;
     constructor(actionInput) {
         this.uri = actionInput.argocd.uri;
         this.fqdn = actionInput.argocd.fqdn;
@@ -34467,6 +34474,7 @@ class ArgoCDServer {
         this.extraCommandArgs = actionInput.argocd.extraCliArgs;
         this.maxConcurrency = actionInput.maxConcurrency;
         this.diffTimeoutMs = actionInput.diffTimeoutSeconds * 1000;
+        this.diffRetries = actionInput.diffRetries;
     }
     async installArgoCDCommand(version, arch = 'linux') {
         if (version == '') {
@@ -34491,18 +34499,26 @@ class ArgoCDServer {
         return this.getAppDiff(app, [`--revision=${targetRevision}`]);
     }
     async getAppDiff(app, params = []) {
-        let res;
-        try {
-            res = await this.command(`app diff --local-repo-root=${process.cwd()} ${app.metadata.name} ${params.join(' ')} --exit-code=false`);
-            core.debug(`stdout: ${res.stdout}`);
-            core.debug(`stderr: ${res.stderr}`);
-            return { app, diff: res.stdout };
-        }
-        catch (e) {
-            res = e;
-            core.error('Unexpected error when fetching app diff:');
-            core.error(`${res.err}`);
-            return { app, diff: '', error: res };
+        const cmd = `app diff --local-repo-root=${process.cwd()} ${app.metadata.name} ${params.join(' ')} --exit-code=false`;
+        for (let attempt = 0;; attempt++) {
+            try {
+                const res = await this.command(cmd);
+                core.debug(`stdout: ${res.stdout}`);
+                core.debug(`stderr: ${res.stderr}`);
+                return { app, diff: res.stdout };
+            }
+            catch (e) {
+                const res = e;
+                if (attempt < this.diffRetries && isTransientGatewayError(res)) {
+                    const waitMs = this.retryBaseDelayMs * (attempt + 1);
+                    core.warning(`Transient gateway error diffing '${app.metadata.name}' (attempt ${attempt + 1}/${this.diffRetries + 1}); retrying in ${waitMs / 1000}s.`);
+                    await sleep(waitMs);
+                    continue;
+                }
+                core.error('Unexpected error when fetching app diff:');
+                core.error(`${res.err}`);
+                return { app, diff: '', error: res };
+            }
         }
     }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -34688,6 +34704,7 @@ function getActionInput() {
         pathAliases: parsePathAliases(core.getInput('path-aliases')),
         maxConcurrency: nonNegativeInt(core.getInput('max-concurrency'), 5),
         diffTimeoutSeconds: nonNegativeInt(core.getInput('diff-timeout-seconds'), 90),
+        diffRetries: nonNegativeInt(core.getInput('diff-retries'), 2),
         forceApps,
         argocd: {
             excludePaths: core.getInput('argocd-exclude-paths').split(','),

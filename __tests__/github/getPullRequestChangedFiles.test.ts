@@ -88,6 +88,7 @@ function fakeActionInput(): ActionInput {
     pathAliases: [],
     maxConcurrency: 5,
     diffTimeoutSeconds: 90,
+    diffRetries: 2,
     forceApps: [],
     argocd: {
       excludePaths: [],

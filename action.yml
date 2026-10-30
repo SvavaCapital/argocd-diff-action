@@ -18,6 +18,10 @@ inputs:
     description: Maximum number of app diffs run at the same time (0 = no limit)
     default: '5'
     required: false
+  diff-retries:
+    description: Retries per app diff when ArgoCD answers 502/503/504 (a render that outlived a proxy timeout; the server usually finishes and caches it), waiting 10s, 20s, ...
+    default: '2'
+    required: false
   diff-timeout-seconds:
     description: Kill a single app diff after this many seconds (0 = no timeout)
     default: '90'
