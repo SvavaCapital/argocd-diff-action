@@ -9,18 +9,55 @@ import { type Diff } from '../Diff.js';
 import { type ExecResult, execCommand, scrubSecrets } from '../lib.js';
 import { ActionInput } from '../getActionInput.js';
 
+type Task<T> = () => Promise<T>;
+
+/**
+ * Runs task factories with at most `concurrency` in flight (0 = all at once).
+ * Results keep the input order and have the shape of Promise.allSettled.
+ */
+export async function runWithConcurrency<T>(
+  tasks: Task<T>[],
+  concurrency: number
+): Promise<PromiseSettledResult<T>[]> {
+  const results: PromiseSettledResult<T>[] = new Array<PromiseSettledResult<T>>(tasks.length);
+  const limit = concurrency > 0 ? Math.min(concurrency, tasks.length) : tasks.length;
+  let nextIndex = 0;
+
+  const worker = async (): Promise<void> => {
+    while (nextIndex < tasks.length) {
+      const index = nextIndex++;
+      const task = tasks[index];
+      if (task === undefined) {
+        continue;
+      }
+      try {
+        results[index] = { status: 'fulfilled', value: await task() };
+      } catch (reason) {
+        results[index] = { status: 'rejected', reason };
+      }
+    }
+  };
+
+  await Promise.all(Array.from({ length: limit }, async () => worker()));
+  return results;
+}
+
 export class ArgoCDServer {
   binaryPath = 'bin/argo';
   extraCommandArgs: string;
   uri: string;
   fqdn: string;
   token: string;
+  maxConcurrency: number;
+  diffTimeoutMs: number;
 
   constructor(actionInput: ActionInput) {
     this.uri = actionInput.argocd.uri;
     this.fqdn = actionInput.argocd.fqdn;
     this.token = actionInput.argocd.token;
     this.extraCommandArgs = actionInput.argocd.extraCliArgs;
+    this.maxConcurrency = actionInput.maxConcurrency;
+    this.diffTimeoutMs = actionInput.diffTimeoutSeconds * 1000;
   }
 
   async installArgoCDCommand(version: string, arch = 'linux'): Promise<void> {
@@ -38,7 +75,7 @@ export class ArgoCDServer {
   async command(params: string): Promise<ExecResult> {
     let cmd = `${this.binaryPath} ${params} --auth-token=${this.token} --server=${this.fqdn} ${this.extraCommandArgs}`;
     core.debug(`Running: ${scrubSecrets(cmd)}`);
-    return execCommand(cmd);
+    return execCommand(cmd, {}, this.diffTimeoutMs);
   }
 
   async getAppLocalDiff(app: App): Promise<Diff> {
@@ -116,39 +153,40 @@ export class ArgoCDServer {
   }
 
   async getAppCollectionLocalDiffs(appCollection: AppCollection): Promise<Diff[]> {
-    let appCollectionDiffPromises: Promise<Diff>[] = [];
+    const tasks: Task<Diff>[] = [];
     appCollection.apps.forEach(app => {
       if (app.spec.source?.path !== undefined) {
-        appCollectionDiffPromises.push(this.getAppLocalDiff(app));
+        tasks.push(async () => this.getAppLocalDiff(app));
       }
     });
-    return this.getAppCollectionDiffs(appCollectionDiffPromises);
+    core.info(
+      `Diffing ${tasks.length} apps, concurrency=${this.maxConcurrency || 'unbounded'}, timeout=${this.diffTimeoutMs / 1000}s per diff`
+    );
+    return this.getAppCollectionDiffs(tasks);
   }
 
   async getAppCollectionRevisionDiffs(
     appCollection: AppCollection,
     appTargetRevisions: AppTargetRevision[]
   ): Promise<Diff[]> {
-    let appCollectionDiffPromises: Promise<Diff>[] = [];
+    const tasks: Task<Diff>[] = [];
     appTargetRevisions.forEach(appTargetRevision => {
-      let app = appCollection.getAppByName(appTargetRevision.appName);
+      const app = appCollection.getAppByName(appTargetRevision.appName);
       if (app) {
-        appCollectionDiffPromises.push(
-          this.getAppRevisionDiff(app, appTargetRevision.targetRevision)
-        );
+        tasks.push(async () => this.getAppRevisionDiff(app, appTargetRevision.targetRevision));
       } else {
         core.warning(
           `Could not find Application '${appTargetRevision.appName}' in AppCollection for revision diffs.`
         );
       }
     });
-    return this.getAppCollectionDiffs(appCollectionDiffPromises);
+    return this.getAppCollectionDiffs(tasks);
   }
 
-  async getAppCollectionDiffs(appCollectionDiffPromises: Promise<Diff>[]): Promise<Diff[]> {
+  async getAppCollectionDiffs(tasks: Task<Diff>[]): Promise<Diff[]> {
     const diffs: Diff[] = [];
 
-    let results = (await Promise.allSettled(appCollectionDiffPromises)).filter(
+    const results = (await runWithConcurrency(tasks, this.maxConcurrency)).filter(
       result => result.status === 'fulfilled'
     );
 

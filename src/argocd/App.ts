@@ -8,6 +8,10 @@ export interface App {
       targetRevision: string;
       kustomize?: Object;
       helm?: Object;
+      plugin?: {
+        name?: string;
+        env?: { name: string; value: string }[];
+      };
     };
   };
   status: {

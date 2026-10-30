@@ -7,9 +7,14 @@ export interface ExecResult {
   stderr: string;
 }
 
-export async function execCommand(command: string, options: ExecOptions = {}): Promise<ExecResult> {
+export async function execCommand(
+  command: string,
+  options: ExecOptions = {},
+  timeoutMs = 0
+): Promise<ExecResult> {
   return new Promise<ExecResult>(async (done, failed) => {
-    exec(command, options, (err: ExecException | null, stdout: string, stderr: string): void => {
+    const execOptions: ExecOptions = { timeout: timeoutMs, ...options };
+    exec(command, execOptions, (err: ExecException | null, stdout: string, stderr: string): void => {
       const res: ExecResult = {
         stdout,
         stderr

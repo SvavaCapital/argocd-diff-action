@@ -6,6 +6,22 @@ inputs:
     description: Only run diffs for ArgoCD Applications whose spec.source.path contains files changed in the pull request
     default: 'false'
     required: false
+  match-env-in-path:
+    description: With only-changed-apps, a changed file under <path>/values/<env>/ or <path>/cluster-config/<env>/ only selects Applications whose plugin env ENV is <env> (base/common select all)
+    default: 'false'
+    required: false
+  path-aliases:
+    description: With only-changed-apps, comma-separated from=to prefix pairs; an app path starting with `from` also matches changed files under `to` + the rest of the path (e.g. `argocd-nonprod/=` makes argocd-nonprod/charts/x also match charts/x/...)
+    default: ''
+    required: false
+  max-concurrency:
+    description: Maximum number of app diffs run at the same time (0 = no limit)
+    default: '5'
+    required: false
+  diff-timeout-seconds:
+    description: Kill a single app diff after this many seconds (0 = no timeout)
+    default: '90'
+    required: false
   argocd-server-fqdn: 
     description: ArgoCD server FQDN (i.e., without the protocol)
     required: true
